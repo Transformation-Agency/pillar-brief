@@ -42,6 +42,14 @@ jobs:
           $config = @{ bundle = @{ windows = @{ signCommand = $signCommand } } } | ConvertTo-Json -Depth 5
           Set-Content -Path src-tauri/tauri.sign.conf.json -Value $config
 
+      - name: Test signing
+        if: env.AZURE_TENANT_ID != ''
+        shell: pwsh
+        run: |
+          Copy-Item "$env:ProgramFiles\nodejs\node.exe" test-sign.exe
+          trusted-signing-cli -v -e $env:AZURE_ENDPOINT -a $env:AZURE_CODE_SIGNING_NAME -c $env:AZURE_CERT_PROFILE_NAME test-sign.exe
+          Remove-Item test-sign.exe
+
       - name: Build desktop app (signed)
         if: env.AZURE_TENANT_ID != ''
         run: npm run desktop:build -- --config src-tauri/tauri.sign.conf.json
