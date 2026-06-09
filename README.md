@@ -17,6 +17,9 @@
   <a href="https://github.com/Transformation-Agency/pillar-brief/releases/download/v0.1.0/Pillar.Brief_0.1.0_x64.dmg">
     <img src="https://img.shields.io/badge/Download-Intel%20Macs-333333?style=for-the-badge&logo=apple" alt="Download for Intel Macs" />
   </a>
+  <a href="https://github.com/Transformation-Agency/pillar-brief/releases/download/v0.1.0/Pillar.Brief_0.1.0_x64-setup.exe">
+    <img src="https://img.shields.io/badge/Download-Windows-0078D4?style=for-the-badge" alt="Download for Windows" />
+  </a>
 </p>
 
 <p align="center">
