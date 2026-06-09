@@ -1,10 +1,6 @@
-<table align="center">
-  <tr>
-    <td align="center" bgcolor="#ffffff">
-      <img src="public/assets/logo.png" alt="Pillar Brief" width="428" />
-    </td>
-  </tr>
-</table>
+<p align="center">
+  <img src="public/assets/readme-logo-banner.svg" alt="Pillar Brief" width="720" />
+</p>
 
 <p align="center">
   <strong>A local-first, self-hosted daily intelligence brief that turns your sources into a scheduled briefing, with optional Telegram delivery.</strong>
