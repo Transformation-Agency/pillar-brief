@@ -1,0 +1,55 @@
+name: Windows build
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    env:
+      AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+      AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+      AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+      AZURE_ENDPOINT: ${{ secrets.AZURE_ENDPOINT }}
+      AZURE_CODE_SIGNING_NAME: ${{ secrets.AZURE_CODE_SIGNING_NAME }}
+      AZURE_CERT_PROFILE_NAME: ${{ secrets.AZURE_CERT_PROFILE_NAME }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Configure Azure Trusted Signing
+        if: env.AZURE_TENANT_ID != ''
+        shell: pwsh
+        run: |
+          cargo install trusted-signing-cli --locked
+          $signCommand = "trusted-signing-cli -e $env:AZURE_ENDPOINT -a $env:AZURE_CODE_SIGNING_NAME -c $env:AZURE_CERT_PROFILE_NAME %1"
+          $config = @{ bundle = @{ windows = @{ signCommand = $signCommand } } } | ConvertTo-Json -Depth 5
+          Set-Content -Path src-tauri/tauri.sign.conf.json -Value $config
+
+      - name: Build desktop app (signed)
+        if: env.AZURE_TENANT_ID != ''
+        run: npm run desktop:build -- --config src-tauri/tauri.sign.conf.json
+
+      - name: Build desktop app (unsigned)
+        if: env.AZURE_TENANT_ID == ''
+        run: npm run desktop:build
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pillar-brief-windows
+          path: src-tauri/target/release/bundle/nsis/*.exe
+          if-no-files-found: error

@@ -63,6 +63,8 @@ function copyRuntimePackage(packageName, copied = new Set()) {
 }
 
 function targetTriple() {
+  if (process.env.PILLAR_TARGET_TRIPLE) return process.env.PILLAR_TARGET_TRIPLE;
+  if (process.env.CARGO_BUILD_TARGET) return process.env.CARGO_BUILD_TARGET;
   try {
     return execFileSync("rustc", ["--print", "host-tuple"], { encoding: "utf8" }).trim();
   } catch {
@@ -71,8 +73,11 @@ function targetTriple() {
   }
 }
 
+const exeSuffix = process.platform === "win32" ? ".exe" : "";
+
 function copyNodeSidecar(filePath) {
-  fs.copyFileSync(process.execPath, filePath);
+  const nodeBinary = process.env.PILLAR_NODE_SIDECAR_PATH || process.execPath;
+  fs.copyFileSync(nodeBinary, filePath);
   fs.chmodSync(filePath, 0o755);
 }
 
@@ -150,10 +155,10 @@ if (fs.existsSync(whisperVendorDir)) {
     copy(vendorModelDir, path.join(whisperResourcesDir, "models"));
   }
   normalizeWhisperArtifacts(whisperResourcesDir);
-  const vendorWhisperBinary = path.join(whisperVendorDir, "bin", "whisper-cli");
+  const vendorWhisperBinary = process.env.PILLAR_WHISPER_CLI_PATH || path.join(whisperVendorDir, "bin", "whisper-cli");
   if (fs.existsSync(vendorWhisperBinary)) {
-    fs.copyFileSync(vendorWhisperBinary, path.join(binariesDir, `${whisperSidecarName}-${hostTriple}`));
-    fs.chmodSync(path.join(binariesDir, `${whisperSidecarName}-${hostTriple}`), 0o755);
+    fs.copyFileSync(vendorWhisperBinary, path.join(binariesDir, `${whisperSidecarName}-${hostTriple}${exeSuffix}`));
+    fs.chmodSync(path.join(binariesDir, `${whisperSidecarName}-${hostTriple}${exeSuffix}`), 0o755);
     rmrf(path.join(whisperResourcesDir, "bin"));
   }
 }
@@ -166,11 +171,11 @@ for (const file of fs.readdirSync(binariesDir)) {
   ) rmrf(path.join(binariesDir, file));
 }
 
-copyNodeSidecar(path.join(binariesDir, `${sidecarName}-${hostTriple}`));
+copyNodeSidecar(path.join(binariesDir, `${sidecarName}-${hostTriple}${exeSuffix}`));
 if (fs.existsSync(whisperVendorDir)) {
-  const vendorWhisperBinary = path.join(whisperVendorDir, "bin", "whisper-cli");
+  const vendorWhisperBinary = process.env.PILLAR_WHISPER_CLI_PATH || path.join(whisperVendorDir, "bin", "whisper-cli");
   if (fs.existsSync(vendorWhisperBinary)) {
-    const whisperSidecarPath = path.join(binariesDir, `${whisperSidecarName}-${hostTriple}`);
+    const whisperSidecarPath = path.join(binariesDir, `${whisperSidecarName}-${hostTriple}${exeSuffix}`);
     fs.copyFileSync(vendorWhisperBinary, whisperSidecarPath);
     fs.chmodSync(whisperSidecarPath, 0o755);
     addDevRpath(whisperSidecarPath, "/opt/homebrew/lib");

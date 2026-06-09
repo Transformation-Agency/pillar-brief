@@ -135,7 +135,8 @@ fn spawn_backend(app: &tauri::App) -> Result<Child, String> {
             )
         };
 
-    Command::new(program)
+    let mut command = Command::new(program);
+    command
         .args(args)
         .current_dir(cwd)
         .env("NODE_ENV", "production")
@@ -148,7 +149,14 @@ fn spawn_backend(app: &tauri::App) -> Result<Child, String> {
         .env("PORT", BACKEND_PORT.to_string())
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stderr(Stdio::null());
+    #[cfg(windows)]
+    {
+        // CREATE_NO_WINDOW: keep the Node backend from opening a console window.
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x0800_0000);
+    }
+    command
         .spawn()
         .map_err(|error| {
             format!(

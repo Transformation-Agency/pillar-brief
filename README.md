@@ -1,8 +1,10 @@
-<p align="center">
-  <img src="public/assets/pillar-brief-app-logo.svg" alt="Pillar Brief" width="96" />
-</p>
-
-<h1 align="center">Pillar Brief</h1>
+<table align="center">
+  <tr>
+    <td align="center" bgcolor="#ffffff">
+      <img src="public/assets/logo.png" alt="Pillar Brief" width="428" />
+    </td>
+  </tr>
+</table>
 
 <p align="center">
   <strong>A local-first, self-hosted daily intelligence brief that turns your sources into a scheduled briefing, with optional Telegram delivery.</strong>
