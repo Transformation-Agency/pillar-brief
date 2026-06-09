@@ -34,7 +34,6 @@ jobs:
         run: npm install --no-audit --no-fund
 
       - name: Configure Azure Trusted Signing
-        if: env.AZURE_TENANT_ID != ''
         shell: pwsh
         run: |
           cargo install trusted-signing-cli --locked
@@ -43,7 +42,6 @@ jobs:
           Set-Content -Path src-tauri/tauri.sign.conf.json -Value $config
 
       - name: Test signing
-        if: env.AZURE_TENANT_ID != ''
         shell: pwsh
         run: |
           Copy-Item "$env:ProgramFiles\nodejs\node.exe" test-sign.exe
@@ -51,12 +49,7 @@ jobs:
           Remove-Item test-sign.exe
 
       - name: Build desktop app (signed)
-        if: env.AZURE_TENANT_ID != ''
         run: npm run desktop:build -- --config src-tauri/tauri.sign.conf.json
-
-      - name: Build desktop app (unsigned)
-        if: env.AZURE_TENANT_ID == ''
-        run: npm run desktop:build
 
       - uses: actions/upload-artifact@v4
         with:
