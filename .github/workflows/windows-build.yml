@@ -45,7 +45,7 @@ jobs:
         shell: pwsh
         run: |
           Copy-Item "$env:ProgramFiles\nodejs\node.exe" test-sign.exe
-          trusted-signing-cli -v -e $env:AZURE_ENDPOINT -a $env:AZURE_CODE_SIGNING_NAME -c $env:AZURE_CERT_PROFILE_NAME test-sign.exe
+          trusted-signing-cli -e $env:AZURE_ENDPOINT -a $env:AZURE_CODE_SIGNING_NAME -c $env:AZURE_CERT_PROFILE_NAME test-sign.exe
           Remove-Item test-sign.exe
 
       - name: Build desktop app (signed)
