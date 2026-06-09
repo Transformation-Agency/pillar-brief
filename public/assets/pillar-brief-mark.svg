@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 160" role="img" aria-label="Pillar Brief mark">
+  <defs>
+    <linearGradient id="gold" x1="42" y1="22" x2="112" y2="138" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#fff0bf"/>
+      <stop offset=".46" stop-color="#d8a85a"/>
+      <stop offset="1" stop-color="#8f5b24"/>
+    </linearGradient>
+    <linearGradient id="paper" x1="58" y1="28" x2="126" y2="132" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#fffaf1" stop-opacity=".28"/>
+      <stop offset="1" stop-color="#fffaf1" stop-opacity=".08"/>
+    </linearGradient>
+  </defs>
+  <rect width="160" height="160" rx="28" fill="#11100e"/>
+  <path fill="url(#paper)" d="M52 24h66l18 18v94H52z"/>
+  <path fill="#fff8eb" d="M118 24v20h18z" opacity=".28"/>
+  <path fill="url(#gold)" d="M54 21h52v17H54zM45 43h70v18H45zM63 58h34v66H63zM48 124h64v17H48z"/>
+  <path fill="#fff2c8" d="M63 21h13v120H63z" opacity=".55"/>
+  <path fill="#6d4319" d="M94 21h12v120H94z" opacity=".35"/>
+  <path fill="#fff8eb" d="M108 77h18v6h-18zM108 94h18v6h-18zM108 111h18v6h-18z" opacity=".62"/>
+</svg>

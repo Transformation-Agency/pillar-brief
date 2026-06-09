@@ -1,0 +1,26 @@
+{
+  "name": "pillar-brief",
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "NODE_OPTIONS=--no-warnings node server/index.js",
+    "start": "NODE_ENV=production NODE_OPTIONS=--no-warnings node server/index.js",
+    "tauri": "tauri",
+    "desktop:dev": "tauri dev",
+    "desktop:build": "tauri build",
+    "desktop:prepare": "npm run build && node scripts/prepare-tauri-sidecar.mjs",
+    "build": "vite build",
+    "check": "npm run build"
+  },
+  "dependencies": {
+    "@vitejs/plugin-react": "^6.0.2",
+    "express": "^5.2.1",
+    "lucide-react": "^1.17.0",
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7",
+    "vite": "^8.0.16"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.0.0"
+  }
+}

@@ -1,0 +1,14 @@
+node_modules/
+dist/
+data/
+.env
+.env.local
+.env.*.local
+claude-design/
+src-tauri/target/
+src-tauri/resources/backend/
+src-tauri/resources/whisper/
+src-tauri/binaries/jack-daily-brief-backend-*
+src-tauri/binaries/pillar-brief-backend-*
+src-tauri/binaries/whisper-cli-*
+.DS_Store

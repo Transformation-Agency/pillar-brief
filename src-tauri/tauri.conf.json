@@ -1,0 +1,39 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Pillar Brief",
+  "version": "0.1.0",
+  "identifier": "com.pillarbrief.desktop",
+  "build": {
+    "beforeBuildCommand": "npm run desktop:prepare",
+    "beforeDevCommand": "npm run desktop:prepare",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "withGlobalTauri": false,
+    "windows": [],
+    "security": {
+      "csp": null
+    },
+    "macOSPrivateApi": false
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["app", "dmg"],
+    "category": "Productivity",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "externalBin": ["binaries/pillar-brief-backend", "binaries/whisper-cli"],
+    "resources": ["resources/backend", "resources/whisper", "icons/tray-template@1x.png"],
+    "shortDescription": "Local daily intelligence brief console.",
+    "longDescription": "Pillar Brief packages a local intelligence brief console for macOS while sharing the same web backend used for self-hosting.",
+    "macOS": {
+      "minimumSystemVersion": "13.0",
+      "signingIdentity": null
+    }
+  }
+}
