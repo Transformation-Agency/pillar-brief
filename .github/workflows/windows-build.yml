@@ -29,7 +29,9 @@ jobs:
           workspaces: src-tauri
 
       - name: Install dependencies
-        run: npm ci
+        # npm ci fails on Windows: lockfiles generated on macOS omit
+        # platform-specific optional deps (long-standing npm bug).
+        run: npm install --no-audit --no-fund
 
       - name: Configure Azure Trusted Signing
         if: env.AZURE_TENANT_ID != ''
