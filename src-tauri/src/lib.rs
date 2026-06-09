@@ -1,4 +1,6 @@
 use std::{
+    fs::OpenOptions,
+    io::Write,
     net::{SocketAddr, TcpStream},
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
@@ -135,6 +137,24 @@ fn spawn_backend(app: &tauri::App) -> Result<Child, String> {
             )
         };
 
+    let log_path = data_dir.join("backend.log");
+    let mut log_file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)
+        .map_err(|error| format!("Could not open backend log {}: {error}", log_path.display()))?;
+    let _ = writeln!(
+        log_file,
+        "\n--- Pillar Brief backend launch {} ---",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_secs().to_string())
+            .unwrap_or_else(|_| "unknown-time".to_string())
+    );
+    let stderr_log = log_file
+        .try_clone()
+        .map_err(|error| format!("Could not prepare backend stderr log: {error}"))?;
+
     let mut command = Command::new(program);
     command
         .args(args)
@@ -148,8 +168,8 @@ fn spawn_backend(app: &tauri::App) -> Result<Child, String> {
         .env("HOST", "127.0.0.1")
         .env("PORT", BACKEND_PORT.to_string())
         .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
+        .stdout(Stdio::from(log_file))
+        .stderr(Stdio::from(stderr_log));
     #[cfg(windows)]
     {
         // CREATE_NO_WINDOW: keep the Node backend from opening a console window.
@@ -163,6 +183,62 @@ fn spawn_backend(app: &tauri::App) -> Result<Child, String> {
                 "Could not start the local backend sidecar. Install Node.js 24 or later, then try again. Details: {error}"
             )
         })
+}
+
+fn startup_error_url(error: &str) -> WebviewUrl {
+    fn escape_html(value: &str) -> String {
+        value
+            .replace('&', "&amp;")
+            .replace('<', "&lt;")
+            .replace('>', "&gt;")
+            .replace('"', "&quot;")
+            .replace('\'', "&#39;")
+    }
+
+    fn encode_data_url(value: &str) -> String {
+        let mut encoded = String::new();
+        for byte in value.bytes() {
+            match byte {
+                b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                    encoded.push(byte as char);
+                }
+                b' ' => encoded.push_str("%20"),
+                _ => encoded.push_str(&format!("%{byte:02X}")),
+            }
+        }
+        encoded
+    }
+
+    let safe_error = escape_html(error);
+    let html = format!(
+        r#"<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Pillar Brief Startup Error</title>
+  <style>
+    body {{ margin: 0; font: 15px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #f8f5ef; color: #272521; }}
+    main {{ max-width: 720px; margin: 72px auto; padding: 0 28px; }}
+    h1 {{ font-size: 28px; margin: 0 0 14px; }}
+    p {{ line-height: 1.55; color: #5f5a52; }}
+    pre {{ white-space: pre-wrap; background: #fff; border: 1px solid #ddd5ca; border-radius: 8px; padding: 16px; color: #8f3d2e; }}
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Pillar Brief could not start its local backend.</h1>
+    <p>The desktop shell opened, but the local server did not become ready. Restart the app once. If it keeps happening, send the backend log from <strong>~/Library/Application Support/com.pillarbrief.desktop/backend.log</strong>.</p>
+    <pre>{safe_error}</pre>
+  </main>
+</body>
+</html>"#
+    );
+    WebviewUrl::External(
+        format!("data:text/html;charset=utf-8,{}", encode_data_url(&html))
+            .parse()
+            .unwrap(),
+    )
 }
 
 fn backend_get_json(path: &str) -> Option<serde_json::Value> {
@@ -257,7 +333,9 @@ fn start_brief_notifier(app: tauri::AppHandle) {
             if first_baseline {
                 continue;
             }
-            let title = json["run"]["title"].as_str().unwrap_or("Open Pillar Brief to read it.");
+            let title = json["run"]["title"]
+                .as_str()
+                .unwrap_or("Open Pillar Brief to read it.");
             notify_brief_ready(&app, title);
         }
     });
@@ -352,23 +430,36 @@ pub fn run() {
         .plugin(tauri_plugin_notification::init())
         .manage(BackendProcess(Mutex::new(None)))
         .setup(|app| {
-            let child = spawn_backend(app)?;
-            wait_for_backend(BACKEND_PORT, Duration::from_secs(20))?;
-            *app.state::<BackendProcess>().0.lock().unwrap() = Some(child);
+            let backend_result = spawn_backend(app).and_then(|mut child| {
+                if let Err(error) = wait_for_backend(BACKEND_PORT, Duration::from_secs(20)) {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(error);
+                }
+                Ok(child)
+            });
 
-            WebviewWindowBuilder::new(
-                app,
-                "main",
-                WebviewUrl::External(BACKEND_URL.parse().unwrap()),
-            )
-            .title("Pillar Brief")
-            .inner_size(1280.0, 840.0)
-            .min_inner_size(960.0, 680.0)
-            .build()
-            .map_err(|error| error.to_string())?;
+            let webview_url = match backend_result {
+                Ok(child) => {
+                    *app.state::<BackendProcess>().0.lock().unwrap() = Some(child);
+                    WebviewUrl::External(BACKEND_URL.parse().unwrap())
+                }
+                Err(error) => startup_error_url(&error),
+            };
 
-            build_tray(app)?;
-            start_brief_notifier(app.handle().clone());
+            WebviewWindowBuilder::new(app, "main", webview_url)
+                .title("Pillar Brief")
+                .inner_size(1280.0, 840.0)
+                .min_inner_size(960.0, 680.0)
+                .build()
+                .map_err(|error| error.to_string())?;
+
+            if let Err(error) = build_tray(app) {
+                eprintln!("Could not build tray: {error}");
+            }
+            if app.state::<BackendProcess>().0.lock().unwrap().is_some() {
+                start_brief_notifier(app.handle().clone());
+            }
             Ok(())
         })
         .on_window_event(|window, event| {
