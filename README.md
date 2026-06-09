@@ -3,11 +3,20 @@
 </p>
 
 <p align="center">
-  <strong>A local-first, self-hosted daily intelligence brief that turns your sources into a scheduled briefing, with optional Telegram delivery.</strong>
+  <strong>A self-hosted desktop app that turns your sources into scheduled daily intelligence briefs, with optional Telegram delivery.</strong>
 </p>
 
 <p align="center">
-  by <strong>Transformation Agency</strong>
+  by <a href="https://transformatioangency.com"><strong>Transformation Agency</strong></a>
+</p>
+
+<p align="center">
+  <a href="https://github.com/Transformation-Agency/pillar-brief/releases/download/v0.1.0/Pillar.Brief_0.1.0_aarch64.dmg">
+    <img src="https://img.shields.io/badge/Download-M--series%20Macs-black?style=for-the-badge&logo=apple" alt="Download for M-series Macs" />
+  </a>
+  <a href="https://github.com/Transformation-Agency/pillar-brief/releases/download/v0.1.0/Pillar.Brief_0.1.0_x64.dmg">
+    <img src="https://img.shields.io/badge/Download-Intel%20Macs-333333?style=for-the-badge&logo=apple" alt="Download for Intel Macs" />
+  </a>
 </p>
 
 <p align="center">
@@ -191,7 +200,8 @@ The desktop app stores data in the platform app data directory by default.
 
 ## Security And Data
 
-Pillar Brief is local-first, but it does store sensitive configuration locally.
+Pillar Brief can run as a self-hosted desktop app, and it stores sensitive
+configuration locally.
 
 Do not commit or share:
 
@@ -218,4 +228,4 @@ npm run desktop:build    # build Tauri desktop app
 
 ## License
 
-MIT © 2026 Transformation Agency
+MIT © 2026 [Transformation Agency](https://transformatioangency.com)
