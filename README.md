@@ -7,7 +7,11 @@
 </p>
 
 <p align="center">
-  by <a href="https://transformatioangency.com"><strong>Transformation Agency</strong></a>
+  by
+  <a href="https://transformationagency.com">
+    <img src="public/assets/ta-logo.png" alt="" width="18" />
+    <strong>Transformation Agency</strong>
+  </a>
 </p>
 
 <p align="center">
@@ -231,4 +235,4 @@ npm run desktop:build    # build Tauri desktop app
 
 ## License
 
-MIT © 2026 [Transformation Agency](https://transformatioangency.com)
+MIT © 2026 [Transformation Agency](https://transformationagency.com)
