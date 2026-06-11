@@ -1,6 +1,6 @@
 [package]
 name = "pillar-brief"
-version = "0.1.0"
+version = "0.1.1"
 description = "Pillar Brief desktop app"
 authors = ["Pillar Brief"]
 edition = "2021"

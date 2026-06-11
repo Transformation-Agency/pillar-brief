@@ -1,11 +1,11 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Pillar Brief",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "identifier": "com.pillarbrief.desktop",
   "build": {
     "beforeBuildCommand": "npm run desktop:prepare",
-    "beforeDevCommand": "npm run desktop:prepare",
+    "beforeDevCommand": "true",
     "frontendDist": "../dist"
   },
   "app": {
@@ -34,7 +34,21 @@
     "macOS": {
       "minimumSystemVersion": "13.0",
       "signingIdentity": null,
-      "entitlements": "entitlements.plist"
+      "entitlements": "entitlements.plist",
+      "dmg": {
+        "windowSize": {
+          "width": 760,
+          "height": 420
+        },
+        "appPosition": {
+          "x": 210,
+          "y": 190
+        },
+        "applicationFolderPosition": {
+          "x": 550,
+          "y": 190
+        }
+      }
     }
   }
 }

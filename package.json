@@ -1,12 +1,12 @@
 {
   "name": "pillar-brief",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "type": "module",
   "scripts": {
     "dev": "NODE_OPTIONS=--no-warnings node server/index.js",
     "start": "NODE_ENV=production NODE_OPTIONS=--no-warnings node server/index.js",
     "tauri": "tauri",
-    "desktop:dev": "tauri dev",
+    "desktop:dev": "npm run desktop:prepare && tauri dev",
     "desktop:build": "tauri build",
     "desktop:prepare": "npm run build && node scripts/prepare-tauri-sidecar.mjs",
     "build": "vite build",
