@@ -9,7 +9,7 @@ const tauriDir = path.join(root, "src-tauri");
 const resourcesDir = path.join(tauriDir, "resources");
 const backendDir = path.join(resourcesDir, "backend");
 const whisperResourcesDir = path.join(resourcesDir, "whisper");
-const whisperVendorDir = path.join(root, "vendor", "whisper");
+const whisperVendorDir = process.env.PILLAR_WHISPER_VENDOR_DIR || path.join(root, "vendor", "whisper");
 const binariesDir = path.join(tauriDir, "binaries");
 const sidecarName = "pillar-brief-backend";
 const legacySidecarName = "jack-daily-brief-backend";
@@ -29,6 +29,19 @@ function copy(src, dest) {
       return base !== ".DS_Store";
     },
   });
+}
+
+function copyBundleAsset(src, dest) {
+  if (process.platform === "darwin") {
+    try {
+      fs.mkdirSync(path.dirname(dest), { recursive: true });
+      execFileSync("ditto", ["--noextattr", "--norsrc", src, dest], { stdio: "ignore" });
+      return;
+    } catch {
+      // Fall back to the normal copy path if ditto is unavailable or refuses the asset.
+    }
+  }
+  copy(src, dest);
 }
 
 function packagePath(packageName, nodeModulesDir = path.join(root, "node_modules")) {
@@ -152,12 +165,12 @@ const hostTriple = targetTriple();
 if (fs.existsSync(whisperVendorDir)) {
   const vendorModelDir = path.join(whisperVendorDir, "models");
   if (fs.existsSync(vendorModelDir)) {
-    copy(vendorModelDir, path.join(whisperResourcesDir, "models"));
+    copyBundleAsset(vendorModelDir, path.join(whisperResourcesDir, "models"));
   }
   normalizeWhisperArtifacts(whisperResourcesDir);
   const vendorWhisperBinary = process.env.PILLAR_WHISPER_CLI_PATH || path.join(whisperVendorDir, "bin", "whisper-cli");
   if (fs.existsSync(vendorWhisperBinary)) {
-    fs.copyFileSync(vendorWhisperBinary, path.join(binariesDir, `${whisperSidecarName}-${hostTriple}${exeSuffix}`));
+    copyBundleAsset(vendorWhisperBinary, path.join(binariesDir, `${whisperSidecarName}-${hostTriple}${exeSuffix}`));
     fs.chmodSync(path.join(binariesDir, `${whisperSidecarName}-${hostTriple}${exeSuffix}`), 0o755);
     rmrf(path.join(whisperResourcesDir, "bin"));
   }
@@ -176,7 +189,7 @@ if (fs.existsSync(whisperVendorDir)) {
   const vendorWhisperBinary = process.env.PILLAR_WHISPER_CLI_PATH || path.join(whisperVendorDir, "bin", "whisper-cli");
   if (fs.existsSync(vendorWhisperBinary)) {
     const whisperSidecarPath = path.join(binariesDir, `${whisperSidecarName}-${hostTriple}${exeSuffix}`);
-    fs.copyFileSync(vendorWhisperBinary, whisperSidecarPath);
+    copyBundleAsset(vendorWhisperBinary, whisperSidecarPath);
     fs.chmodSync(whisperSidecarPath, 0o755);
     addDevRpath(whisperSidecarPath, "/opt/homebrew/lib");
     addDevRpath(whisperSidecarPath, "/usr/local/lib");
