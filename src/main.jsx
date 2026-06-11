@@ -50,7 +50,12 @@ const nav = [
 
 const defaultOwnerName = "You";
 const defaultOpenAiModel = "gpt-5.4-mini";
-const defaultModelForProvider = (provider) => provider === "openai" ? defaultOpenAiModel : "";
+const defaultGrokModel = "grok-4.3";
+const defaultModelForProvider = (provider) => {
+  if (provider === "openai") return defaultOpenAiModel;
+  if (provider === "xai") return defaultGrokModel;
+  return "";
+};
 
 const workflowLabels = {
   fetch: "fetch configured sources",
@@ -331,7 +336,18 @@ function BrandLogo({ name }) {
   if (key.includes("anthropic")) return <span className="brand-logo anthropic-logo" aria-hidden="true">AI</span>;
   if (key.includes("openrouter")) return <span className="brand-logo openrouter-logo" aria-hidden="true">OR</span>;
   if (key.includes("gemini") || key.includes("google")) return <span className="brand-logo gemini-logo" aria-hidden="true">G</span>;
+  if (key.includes("xai") || key.includes("grok")) return <span className="brand-logo xai-logo" aria-hidden="true">xAI</span>;
   return <span className="source-icon-box"><Icon name={name} /></span>;
+}
+
+function PillarBriefLockup({ alt = "Pillar Brief" }) {
+  return <span className="brand-lockup" aria-label={alt}>
+    <img className="brand-lockup-icon" src="/assets/pillar-brief-app-icon.png" alt="" aria-hidden="true" />
+    <span className="brand-wordmark" aria-hidden="true">
+      <span className="brand-wordmark-main"><span>P</span><img className="brand-wordmark-pillar" src="/assets/pillar-brief-wordmark-pillar.png" alt="" /><span>LLAR</span></span>
+      <span className="brand-wordmark-product">Brief</span>
+    </span>
+  </span>;
 }
 
 async function api(path, options) {
@@ -405,7 +421,7 @@ function Shell({ route, setRoute, state, children }) {
   return <div className="app">
     <header className="app-header">
       <button className="brand" onClick={() => setRoute("overview")}>
-        <img className="brand-image" src="/assets/logo.png" alt={state?.briefConfig?.productName || "Pillar Brief"} />
+        <PillarBriefLockup alt={state?.briefConfig?.productName || "Pillar Brief"} />
       </button>
       <nav className="nav">
         {nav.flatMap(([, items]) => items).map(([id, label]) => <button key={id} className={`nav-item ${route === id ? "active" : ""}`} onClick={() => setRoute(id)}>
@@ -1297,6 +1313,15 @@ const modelProviderRows = [
     docsUrl: "https://ai.google.dev/gemini-api/docs/models",
     helper: "Create a Gemini API key in Google AI Studio. Available models are detected directly from Google after the key is saved or pasted.",
   },
+  {
+    provider: "xai",
+    name: "Grok",
+    logo: "xai",
+    sub: "xAI Grok models for brief generation",
+    keyUrl: "https://console.x.ai/",
+    docsUrl: "https://docs.x.ai/docs/models",
+    helper: "Create an xAI API key, add credits in the xAI Console if needed, then validate it here to discover Grok models.",
+  },
 ];
 
 const setupLinks = {
@@ -1369,7 +1394,7 @@ function TelegramPairingFlow({ state, refresh, initialToken = "", onPaired }) {
           <p>Follow Telegram's BotFather tutorial to create a bot and copy the API token. Then paste that token here.</p>
         </div>
       </div>
-      <Button type="button" icon="external" kind="primary" onClick={() => openExternalUrl("https://docs.expertflow.com/cx/4.5/how-to-get-telegram-bot-token")}>Open bot setup guide</Button>
+      <Button type="button" icon="external" kind="primary" onClick={() => openExternalUrl("https://core.telegram.org/bots/tutorial#obtain-your-bot-token")}>Open bot setup guide</Button>
     </div>
     <form className="pair-token-row" onSubmit={startPairing}>
       <Field label="BotFather API token" type="password" value={botToken} onChange={setBotToken} placeholder={state.telegram.botToken ? "Saved. Paste a new token to replace it." : "123456:ABC..."} />
@@ -2049,7 +2074,7 @@ function Onboarding({ state, mutate, refresh }) {
   const activeModelProvider = modelProviderRows.find((row) => row.provider === model.provider) || modelProviderRows[0];
   return <div className="onboarding-shell">
     <aside className="onboarding-rail">
-      <img src="/assets/logo.png" alt="Pillar Brief" />
+      <PillarBriefLockup />
       <div className="onboarding-progress">{steps.map((id, index) => <button key={id} className={index === stepIndex ? "active" : index < stepIndex ? "done" : ""} onClick={() => setStep(id)}><b>{index + 1}</b><span>{id === "intent" ? "Brief" : id === "setup" ? "Setup" : id === "perspectives" ? "Lenses" : id === "access" ? "Access" : id === "audio" ? "Audio" : id}</span></button>)}</div>
     </aside>
     <main className="onboarding-main">
@@ -2584,6 +2609,7 @@ function Settings({ state, mutate, refresh }) {
           <button type="button" onClick={() => openProvider("anthropic")}><BrandLogo name="anthropic" /><strong>Anthropic</strong><span>Add or switch to Claude models.</span></button>
           <button type="button" onClick={() => openProvider("openrouter")}><BrandLogo name="openrouter" /><strong>OpenRouter</strong><span>Add routed model access.</span></button>
           <button type="button" onClick={() => openProvider("gemini")}><BrandLogo name="gemini" /><strong>Gemini</strong><span>Add or switch to Google Gemini models.</span></button>
+          <button type="button" onClick={() => openProvider("xai")}><BrandLogo name="xai" /><strong>Grok</strong><span>Add or switch to xAI Grok models.</span></button>
           <button type="button" onClick={() => { setConnectorModal(false); setTelegramModal(true); }}><BrandLogo name="Telegram" /><strong>Telegram delivery</strong><span>Bot token, chat ID, and command routing.</span></button>
           <button type="button" onClick={() => { setConnectorModal(false); setXModal(true); }}><BrandLogo name="X" /><strong>X search API</strong><span>Official bearer-token recent search.</span></button>
           <button type="button" onClick={() => setConnectorModal(false)}><Icon name="volume" /><strong>ElevenLabs audio</strong><span>Use the Audio Briefs settings below.</span></button>

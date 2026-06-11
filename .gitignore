@@ -5,6 +5,9 @@ data/
 .env.local
 .env.*.local
 claude-design/
+SAAS_SPEC.md
+*_SPEC.md
+*_PLAN.md
 src-tauri/target/
 src-tauri/resources/backend/
 src-tauri/resources/whisper/

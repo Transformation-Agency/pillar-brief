@@ -258,7 +258,7 @@ function migrate() {
 
 const now = () => new Date().toISOString();
 const defaultOpenAiModel = "gpt-5.4-mini";
-const modelProviders = ["openai", "anthropic", "openrouter", "gemini", "custom"];
+const modelProviders = ["openai", "anthropic", "openrouter", "gemini", "xai", "custom"];
 const id = (prefix) => `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
 const json = (value) => JSON.stringify(value ?? null);
 const parse = (value, fallback) => {
@@ -528,12 +528,14 @@ function providerEnvKey(provider) {
   if (provider === "anthropic") return process.env.ANTHROPIC_API_KEY || "";
   if (provider === "openrouter") return process.env.OPENROUTER_API_KEY || "";
   if (provider === "gemini") return process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || "";
+  if (provider === "xai") return process.env.XAI_API_KEY || process.env.GROK_API_KEY || "";
   if (provider === "custom") return process.env.CUSTOM_MODEL_API_KEY || "";
   return "";
 }
 
 function defaultModelForProvider(provider) {
   if (provider === "openai") return defaultOpenAiModel;
+  if (provider === "xai") return "grok-4.3";
   return "";
 }
 
@@ -587,6 +589,10 @@ async function fetchProviderModels({ provider, apiKey, savedApiKey, baseUrl }) {
   } else if (provider === "gemini") {
     if (!runtimeKey) return { provider, models: [], credentialSource: source, error: "Add a Gemini API key or set GEMINI_API_KEY" };
     url = `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(runtimeKey)}`;
+  } else if (provider === "xai") {
+    if (!runtimeKey) return { provider, models: [], credentialSource: source, error: "Add an xAI API key or set XAI_API_KEY" };
+    url = "https://api.x.ai/v1/models";
+    headers.authorization = `Bearer ${runtimeKey}`;
   } else if (provider === "custom") {
     if (!baseUrl) return { provider, models: [], credentialSource: source, error: "Custom providers require a Base URL" };
     url = `${baseUrl.replace(/\/+$/, "")}/models`;
@@ -624,6 +630,8 @@ function modelRuntime(modelRow) {
       ? "https://api.anthropic.com/v1"
       : modelRow.provider === "gemini"
         ? "https://generativelanguage.googleapis.com/v1beta"
+        : modelRow.provider === "xai"
+          ? "https://api.x.ai/v1"
         : "https://api.openai.com/v1";
   return { apiKey, baseUrl };
 }
@@ -3448,7 +3456,7 @@ app.post("/api/runtime/ffmpeg/install", async (req, res) => {
 
 app.post("/api/runtime/open-url", async (req, res) => {
   const url = String(req.body?.url || "").trim();
-  if (!/^https:\/\/(core\.telegram\.org|docs\.expertflow\.com|telegram\.org|t\.me|brew\.sh|formulae\.brew\.sh|ffmpeg\.org|platform\.openai\.com|help\.openai\.com|console\.anthropic\.com|docs\.anthropic\.com|openrouter\.ai|aistudio\.google\.com|ai\.google\.dev|developer\.x\.com|docs\.x\.com|elevenlabs\.io)(\/|$)/i.test(url)) {
+  if (!/^https:\/\/(core\.telegram\.org|telegram\.org|t\.me|brew\.sh|formulae\.brew\.sh|ffmpeg\.org|platform\.openai\.com|help\.openai\.com|console\.anthropic\.com|docs\.anthropic\.com|openrouter\.ai|aistudio\.google\.com|ai\.google\.dev|developer\.x\.com|docs\.x\.com|console\.x\.ai|docs\.x\.ai|elevenlabs\.io)(\/|$)/i.test(url)) {
     return res.status(400).json({ error: "That external URL is not allowed.", state: state() });
   }
   if (isDesktop && process.platform === "darwin") {

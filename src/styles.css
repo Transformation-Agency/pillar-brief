@@ -68,12 +68,50 @@ button { cursor: pointer; }
   padding: 0;
   color: inherit;
 }
-.brand-image {
+.brand-lockup {
+  display: inline-flex;
+  align-items: center;
+  gap: 14px;
+  min-width: 0;
+}
+.brand-lockup-icon {
   display: block;
-  width: 300px;
-  height: auto;
-  max-height: 70px;
+  width: 58px;
+  height: 58px;
   object-fit: contain;
+  flex: 0 0 auto;
+}
+.brand-wordmark {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 11px;
+  color: #11100e;
+  white-space: nowrap;
+}
+.brand-wordmark-main {
+  display: inline-flex;
+  align-items: center;
+  font-family: "Cormorant Garamond", Georgia, serif;
+  font-size: 39px;
+  font-weight: 600;
+  line-height: 1;
+  letter-spacing: 8px;
+}
+.brand-wordmark-pillar {
+  display: inline-block;
+  width: 18px;
+  height: 34px;
+  margin: 0 5px 1px -1px;
+  object-fit: contain;
+  flex: 0 0 auto;
+}
+.brand-wordmark-product {
+  font-family: "Cormorant Garamond", Georgia, serif;
+  color: #1f3a5f;
+  font-size: 33px;
+  font-weight: 650;
+  line-height: 1;
+  letter-spacing: 0;
 }
 .brand-mark {
   width: 42px;
@@ -195,6 +233,7 @@ button { cursor: pointer; }
 .brand-logo.openai-logo { color: #1f1f1f; background: #f1eee9; }
 .brand-logo.anthropic-logo { color: #16120f; background: #eee8df; font-size: 16px; }
 .brand-logo.openrouter-logo { color: #473b83; background: #eeebfb; font-size: 13px; }
+.brand-logo.xai-logo { color: #111; background: #f1eee9; font-size: 12px; }
 
 .main { min-width: 0; }
 .scroll { min-height: calc(100vh - 78px); }
@@ -2064,7 +2103,24 @@ span.section-target-select {
   align-content: start;
   gap: 34px;
 }
-.onboarding-rail img { width: 156px; height: auto; }
+.onboarding-rail .brand-lockup {
+  align-self: start;
+}
+.onboarding-rail .brand-lockup-icon {
+  width: 46px;
+  height: 46px;
+}
+.onboarding-rail .brand-wordmark-main {
+  font-size: 30px;
+  letter-spacing: 6px;
+}
+.onboarding-rail .brand-wordmark-pillar {
+  width: 14px;
+  height: 27px;
+}
+.onboarding-rail .brand-wordmark-product {
+  font-size: 26px;
+}
 .onboarding-progress {
   display: grid;
   gap: 8px;
@@ -2476,7 +2532,9 @@ span.section-target-select {
     height: auto;
     padding: 16px 22px 0;
   }
-  .brand-image { width: 260px; max-height: 62px; }
+  .brand-lockup-icon { width: 52px; height: 52px; }
+  .brand-wordmark-main { font-size: 35px; letter-spacing: 7px; }
+  .brand-wordmark-product { font-size: 30px; }
   .nav {
     grid-column: 1 / -1;
     order: 3;
@@ -2511,7 +2569,11 @@ span.section-target-select {
   .home-page { padding: 0 0 58px; }
   .home-page > section:not(.hero) { width: calc(100% - 36px); }
   .app-header { padding-inline: 16px; gap: 12px; }
-  .brand-image { width: 214px; max-height: 54px; }
+  .brand-lockup { gap: 10px; }
+  .brand-lockup-icon { width: 42px; height: 42px; }
+  .brand-wordmark-main { font-size: 27px; letter-spacing: 5px; }
+  .brand-wordmark-pillar { width: 12px; height: 24px; margin-right: 3px; }
+  .brand-wordmark-product { font-size: 24px; }
   .brand-name { font-size: 18px; }
   .brand-mark { width: 36px; height: 36px; font-size: 15px; }
   .header-actions { gap: 8px; }
