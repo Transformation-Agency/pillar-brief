@@ -97,26 +97,27 @@ function downsample(alpha, highSize, size) {
 }
 
 function render(size) {
-  const scale = 4;
-  const highSize = size * scale;
+  const antialias = 4;
+  const highSize = size * antialias;
   const alpha = new Uint8Array(highSize * highSize);
-  const s = scale;
+  const s = (size / 18) * antialias;
 
-  // Document outline with folded corner.
-  drawLine(alpha, highSize, 4 * s, 3 * s, 11.5 * s, 3 * s, 2 * s);
-  drawLine(alpha, highSize, 11.5 * s, 3 * s, 15 * s, 6.5 * s, 2 * s);
-  drawLine(alpha, highSize, 15 * s, 6.5 * s, 15 * s, 15 * s, 2 * s);
-  drawLine(alpha, highSize, 15 * s, 15 * s, 4 * s, 15 * s, 2 * s);
-  drawLine(alpha, highSize, 4 * s, 15 * s, 4 * s, 3 * s, 2 * s);
-  drawLine(alpha, highSize, 11.5 * s, 3.5 * s, 11.5 * s, 6.5 * s, 1.5 * s);
-  drawLine(alpha, highSize, 11.5 * s, 6.5 * s, 14.5 * s, 6.5 * s, 1.5 * s);
+  // Document outline with folded corner. The shape intentionally fills most
+  // of the canvas so macOS does not render it smaller than neighboring icons.
+  drawLine(alpha, highSize, 2 * s, 1.5 * s, 12 * s, 1.5 * s, 2.4 * s);
+  drawLine(alpha, highSize, 12 * s, 1.5 * s, 16.5 * s, 6 * s, 2.4 * s);
+  drawLine(alpha, highSize, 16.5 * s, 6 * s, 16.5 * s, 16.5 * s, 2.4 * s);
+  drawLine(alpha, highSize, 16.5 * s, 16.5 * s, 2 * s, 16.5 * s, 2.4 * s);
+  drawLine(alpha, highSize, 2 * s, 16.5 * s, 2 * s, 1.5 * s, 2.4 * s);
+  drawLine(alpha, highSize, 12 * s, 2 * s, 12 * s, 6 * s, 1.8 * s);
+  drawLine(alpha, highSize, 12 * s, 6 * s, 16 * s, 6 * s, 1.8 * s);
 
   // Pillar mark, intentionally chunky for menu-bar scale.
-  fillRect(alpha, highSize, 6.5 * s, 5.5 * s, 5.5 * s, 1.5 * s);
-  fillRect(alpha, highSize, 7.5 * s, 7.5 * s, 3.5 * s, 1.5 * s);
-  fillRect(alpha, highSize, 7.5 * s, 9.5 * s, 1.3 * s, 3.5 * s);
-  fillRect(alpha, highSize, 10 * s, 9.5 * s, 1.3 * s, 3.5 * s);
-  fillRect(alpha, highSize, 7 * s, 13 * s, 5 * s, 1.3 * s);
+  fillRect(alpha, highSize, 5.2 * s, 5.2 * s, 7.2 * s, 1.8 * s);
+  fillRect(alpha, highSize, 6.3 * s, 7.6 * s, 5 * s, 1.6 * s);
+  fillRect(alpha, highSize, 6.5 * s, 9.7 * s, 1.6 * s, 4.2 * s);
+  fillRect(alpha, highSize, 9.6 * s, 9.7 * s, 1.6 * s, 4.2 * s);
+  fillRect(alpha, highSize, 5.9 * s, 14 * s, 6.2 * s, 1.5 * s);
 
   return png(size, size, downsample(alpha, highSize, size));
 }

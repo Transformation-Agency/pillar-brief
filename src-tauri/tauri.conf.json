@@ -28,7 +28,7 @@
       "icons/icon.ico"
     ],
     "externalBin": ["binaries/pillar-brief-backend", "binaries/whisper-cli"],
-    "resources": ["resources/backend", "resources/whisper", "icons/tray-template@1x.png"],
+    "resources": ["resources/backend", "resources/whisper", "icons/tray-template.png", "icons/tray-template@1x.png"],
     "shortDescription": "Local daily intelligence brief console.",
     "longDescription": "Pillar Brief packages a local intelligence brief console for macOS while sharing the same web backend used for self-hosting.",
     "macOS": {

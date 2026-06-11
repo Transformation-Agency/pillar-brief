@@ -373,8 +373,10 @@ fn open_route(app: &tauri::AppHandle, hash: &str) {
 fn tray_template_icon(app: &tauri::App) -> Option<Image<'static>> {
     let mut candidates = Vec::new();
     if let Ok(resource_dir) = app.path().resource_dir() {
+        candidates.push(resource_dir.join("icons/tray-template.png"));
         candidates.push(resource_dir.join("icons/tray-template@1x.png"));
     }
+    candidates.push(project_root().join("src-tauri/icons/tray-template.png"));
     candidates.push(project_root().join("src-tauri/icons/tray-template@1x.png"));
     candidates
         .into_iter()
