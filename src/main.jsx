@@ -1071,7 +1071,24 @@ function Approvals({ state, mutate }) {
 
 function briefDisplayTitle(run) {
   const markdown = run.artifact?.onePageBrief || "";
-  return markdown.match(/^#\s+(.+)$/m)?.[1] || run.artifact?.strategicBrief?.headline || run.artifact?.title || "Daily Brief";
+  const title = markdown.match(/^#\s+(.+)$/m)?.[1] || run.artifact?.strategicBrief?.headline || run.artifact?.title;
+  if (title) return title;
+  return run.status === "running" ? "Generating today's brief" : "Daily Brief";
+}
+
+function BriefGenerationProgress({ run }) {
+  const steps = run.steps || [];
+  const doneCount = steps.filter((step) => step.status === "done").length;
+  return <div className="generating-inline">
+    <Badge tone="muted">Generating</Badge>
+    <h2>Generating today's brief</h2>
+    <p>This brief is running in the background{steps.length ? ` (step ${Math.min(doneCount + 1, steps.length)} of ${steps.length})` : ""}. It will appear here automatically when it is ready.</p>
+    {!!steps.length && <div className="step-grid">{steps.map((step) => <div key={step.key} className="step">
+      <b>{String(step.n).padStart(2, "0")}</b>
+      <strong>{step.name}</strong>
+      <small>{step.status === "done" ? step.output || "Done" : step.status === "active" ? step.output || "Working..." : "Pending"}</small>
+    </div>)}</div>}
+  </div>;
 }
 
 function Briefs({ state, runWorkflow, refresh }) {
@@ -1164,15 +1181,17 @@ function Briefs({ state, runWorkflow, refresh }) {
           const selectedRun = selected?.id === run.id;
           const date = new Date(run.startedAt);
           const delivered = run.artifact?.telegramDelivery?.ok;
+          const running = run.status === "running";
+          const failed = run.status === "failed";
           return <button key={run.id} className={`brief-list-item ${selectedRun ? "active" : ""}`} onClick={() => setSelectedId(run.id)}>
             <span className="date-icon"><Calendar className="ico" /></span>
-            <span><small>{date.toLocaleDateString()} · {date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}</small><strong>{briefDisplayTitle(run)}</strong><em>{(run.artifact?.selectedIssues || []).slice(0, 3).map((issue) => issue.sourceType || "Signal").join(" · ") || "Brief"}</em></span>
-            <Badge tone={delivered ? "ok" : "warn"}>{delivered ? "Delivered" : "Saved"}</Badge>
+            <span><small>{date.toLocaleDateString()} · {date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}</small><strong>{briefDisplayTitle(run)}</strong><em>{(run.artifact?.selectedIssues || []).slice(0, 3).map((issue) => issue.sourceType || "Signal").join(" · ") || (running ? "In progress" : "Brief")}</em></span>
+            <Badge tone={running ? "muted" : failed ? "err" : delivered ? "ok" : "warn"}>{running ? "Generating..." : failed ? "Failed" : delivered ? "Delivered" : "Saved"}</Badge>
           </button>;
         })}</div>
       </aside>
       <section className="panel brief-reader">
-        {selected ? <>
+        {selected ? selected.status === "running" ? <BriefGenerationProgress run={selected} /> : <>
           <div className="brief-reader-actions">
             <Button icon="volume" onClick={playBriefAudio} disabled={audioBusy || state.tts?.status !== "ready"}>{audioBusy ? "Generating..." : audioPlaying ? "Pause" : audioUrl ? "Play audio" : "Generate audio"}</Button>
             {audioUrl && <Button icon="restart" onClick={restartBriefAudio} disabled={audioBusy || state.tts?.status !== "ready"}>Restart</Button>}

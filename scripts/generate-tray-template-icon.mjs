@@ -102,22 +102,16 @@ function render(size) {
   const alpha = new Uint8Array(highSize * highSize);
   const s = (size / 18) * antialias;
 
-  // Document outline with folded corner. The shape intentionally fills most
-  // of the canvas so macOS does not render it smaller than neighboring icons.
-  drawLine(alpha, highSize, 2 * s, 1.5 * s, 12 * s, 1.5 * s, 2.4 * s);
-  drawLine(alpha, highSize, 12 * s, 1.5 * s, 16.5 * s, 6 * s, 2.4 * s);
-  drawLine(alpha, highSize, 16.5 * s, 6 * s, 16.5 * s, 16.5 * s, 2.4 * s);
-  drawLine(alpha, highSize, 16.5 * s, 16.5 * s, 2 * s, 16.5 * s, 2.4 * s);
-  drawLine(alpha, highSize, 2 * s, 16.5 * s, 2 * s, 1.5 * s, 2.4 * s);
-  drawLine(alpha, highSize, 12 * s, 2 * s, 12 * s, 6 * s, 1.8 * s);
-  drawLine(alpha, highSize, 12 * s, 6 * s, 16 * s, 6 * s, 1.8 * s);
-
-  // Pillar mark, intentionally chunky for menu-bar scale.
-  fillRect(alpha, highSize, 5.2 * s, 5.2 * s, 7.2 * s, 1.8 * s);
-  fillRect(alpha, highSize, 6.3 * s, 7.6 * s, 5 * s, 1.6 * s);
-  fillRect(alpha, highSize, 6.5 * s, 9.7 * s, 1.6 * s, 4.2 * s);
-  fillRect(alpha, highSize, 9.6 * s, 9.7 * s, 1.6 * s, 4.2 * s);
-  fillRect(alpha, highSize, 5.9 * s, 14 * s, 6.2 * s, 1.5 * s);
+  // Use a simplified standalone pillar for the menu bar. The full document
+  // mark has too many competing edges at 18px, so the tray glyph keeps only
+  // the most recognizable brand shape.
+  fillRect(alpha, highSize, 4.4 * s, 2.1 * s, 9.2 * s, 1.5 * s);
+  fillRect(alpha, highSize, 5.3 * s, 4.1 * s, 7.4 * s, 1.3 * s);
+  fillRect(alpha, highSize, 6.2 * s, 6 * s, 5.6 * s, 1.4 * s);
+  fillRect(alpha, highSize, 6.6 * s, 8 * s, 1.45 * s, 5.2 * s);
+  fillRect(alpha, highSize, 9.9 * s, 8 * s, 1.45 * s, 5.2 * s);
+  fillRect(alpha, highSize, 5.8 * s, 13.6 * s, 6.4 * s, 1.35 * s);
+  fillRect(alpha, highSize, 4.6 * s, 15.2 * s, 8.8 * s, 1.4 * s);
 
   return png(size, size, downsample(alpha, highSize, size));
 }

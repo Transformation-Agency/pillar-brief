@@ -261,8 +261,13 @@ fn backend_get_json(path: &str) -> Option<serde_json::Value> {
 fn watch_for_notification_activation(app: tauri::AppHandle) {
     thread::spawn(move || {
         let deadline = Instant::now() + Duration::from_secs(600);
+        // Require an inactive reading first so the trigger is the click's
+        // inactive -> active transition, not focus the app already had when
+        // the notification was posted. Keep watching even while the window is
+        // visible: the user may close it and click the notification later.
+        let mut was_active = true;
         while Instant::now() < deadline {
-            thread::sleep(Duration::from_millis(750));
+            thread::sleep(Duration::from_millis(500));
             let (tx, rx) = std::sync::mpsc::channel();
             let handle = app.clone();
             let _ = app.run_on_main_thread(move || {
@@ -276,10 +281,12 @@ fn watch_for_notification_activation(app: tauri::AppHandle) {
                 let _ = tx.send((active, visible));
             });
             match rx.recv_timeout(Duration::from_secs(2)) {
-                Ok((_, true)) => break,
-                Ok((true, false)) => {
-                    show_main_window(&app);
-                    break;
+                Ok((active, visible)) => {
+                    if active && !was_active && !visible {
+                        open_route(&app, "briefs");
+                        break;
+                    }
+                    was_active = active;
                 }
                 _ => {}
             }
@@ -307,6 +314,47 @@ fn notify_brief_ready(app: &tauri::AppHandle, title: &str) {
     });
     #[cfg(target_os = "macos")]
     watch_for_notification_activation(app.clone());
+}
+
+/// Ask for notification authorization at startup so the macOS permission
+/// prompt appears on first launch instead of swallowing the first
+/// "brief is ready" notification.
+#[cfg(target_os = "macos")]
+fn request_notification_authorization() {
+    use block2::StackBlock;
+    use objc2_foundation::{NSBundle, NSError};
+    use objc2_user_notifications::{UNAuthorizationOptions, UNUserNotificationCenter};
+
+    // UNUserNotificationCenter requires a real app bundle; skip when running
+    // the bare binary (e.g. cargo run without a bundle identifier).
+    if NSBundle::mainBundle().bundleIdentifier().is_none() {
+        return;
+    }
+    let center = UNUserNotificationCenter::currentNotificationCenter();
+    let options =
+        UNAuthorizationOptions::Alert | UNAuthorizationOptions::Sound | UNAuthorizationOptions::Badge;
+    let handler =
+        StackBlock::new(|_granted: objc2::runtime::Bool, _error: *mut NSError| {}).copy();
+    center.requestAuthorizationWithOptions_completionHandler(options, &handler);
+}
+
+/// Enable launch-at-login once so scheduled briefs can generate in the
+/// background without the user remembering to open the app. Only the first
+/// launch flips it on; if the user later disables it in System Settings the
+/// marker file keeps us from re-enabling it.
+fn configure_autostart(app: &tauri::App) {
+    use tauri_plugin_autostart::ManagerExt;
+    let Ok(data_dir) = app.path().app_data_dir() else {
+        return;
+    };
+    let marker = data_dir.join("autostart-initialized");
+    if marker.exists() {
+        return;
+    }
+    if app.autolaunch().enable().is_ok() {
+        let _ = std::fs::create_dir_all(&data_dir);
+        let _ = std::fs::write(&marker, "1");
+    }
 }
 
 fn start_brief_notifier(app: tauri::AppHandle) {
@@ -430,6 +478,10 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
 pub fn run() {
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            None,
+        ))
         .manage(BackendProcess(Mutex::new(None)))
         .setup(|app| {
             let backend_result = spawn_backend(app).and_then(|mut child| {
@@ -459,6 +511,9 @@ pub fn run() {
             if let Err(error) = build_tray(app) {
                 eprintln!("Could not build tray: {error}");
             }
+            configure_autostart(app);
+            #[cfg(target_os = "macos")]
+            request_notification_authorization();
             if app.state::<BackendProcess>().0.lock().unwrap().is_some() {
                 start_brief_notifier(app.handle().clone());
             }

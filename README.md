@@ -15,13 +15,13 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/Transformation-Agency/pillar-brief/releases/download/v0.1.1/Pillar.Brief_0.1.1_aarch64.dmg">
+  <a href="https://github.com/Transformation-Agency/pillar-brief/releases/download/v0.1.2/Pillar.Brief_0.1.2_aarch64.dmg">
     <img src="https://img.shields.io/badge/Download-M--series%20Macs-black?style=for-the-badge&logo=apple" alt="Download for M-series Macs" />
   </a>
-  <a href="https://github.com/Transformation-Agency/pillar-brief/releases/download/v0.1.1/Pillar.Brief_0.1.1_x64.dmg">
+  <a href="https://github.com/Transformation-Agency/pillar-brief/releases/download/v0.1.2/Pillar.Brief_0.1.2_x64.dmg">
     <img src="https://img.shields.io/badge/Download-Intel%20Macs-333333?style=for-the-badge&logo=apple" alt="Download for Intel Macs" />
   </a>
-  <a href="https://github.com/Transformation-Agency/pillar-brief/releases/download/v0.1.1/Pillar.Brief_0.1.1_x64-setup.exe">
+  <a href="https://github.com/Transformation-Agency/pillar-brief/releases/download/v0.1.2/Pillar.Brief_0.1.2_x64-setup.exe">
     <img src="https://img.shields.io/badge/Download-Windows-0078D4?style=for-the-badge" alt="Download for Windows" />
   </a>
 </p>

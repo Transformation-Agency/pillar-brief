@@ -960,6 +960,9 @@ span.section-target-select {
 }
 .step strong { display: block; margin: 5px 0; }
 .step small { color: var(--muted); }
+.generating-inline { display: flex; flex-direction: column; gap: 10px; }
+.generating-inline h2 { margin: 0; }
+.generating-inline p { margin: 0 0 8px; color: var(--muted); }
 .brief-shell {
   border-top: 1px solid var(--line);
   padding-top: 18px;

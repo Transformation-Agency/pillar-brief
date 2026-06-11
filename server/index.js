@@ -2172,7 +2172,7 @@ function briefDeliveryReady() {
 }
 
 function scheduledBriefAlreadyRan(dateKey, timezone) {
-  const rows = all("SELECT started_at FROM workflow_runs WHERE trigger LIKE 'Scheduled%' ORDER BY started_at DESC LIMIT 10");
+  const rows = all("SELECT started_at FROM workflow_runs WHERE trigger LIKE 'Scheduled%' AND status='completed' ORDER BY started_at DESC LIMIT 10");
   return rows.some((row) => scheduleParts(new Date(row.started_at), timezone).dateKey === dateKey);
 }
 
@@ -2191,6 +2191,9 @@ async function runScheduledBriefDeliveryIfDue(trigger = "Scheduled · Auto-deliv
   try {
     await executeWorkflow(trigger);
   } catch (error) {
+    // A failed run must not consume the day's slot; clear the key so the
+    // minute interval retries instead of silently skipping until tomorrow.
+    if (appStateGet(LAST_BRIEF_DELIVERY_KEY) === key) appStateSet(LAST_BRIEF_DELIVERY_KEY, "");
     audit("brief.delivery_failed", "brief_config", "1", error.message || "Scheduled brief delivery failed", {}, "system");
   }
   return true;
@@ -3380,6 +3383,12 @@ app.get("/api/notifications/latest-brief", (req, res) => {
   res.json({ run: { id: row.id, completedAt: row.completed_at, title } });
 });
 
+app.post("/api/runtime/shutdown", (req, res) => {
+  console.log("Shutdown requested: a newer Pillar Brief backend is taking over the port.");
+  res.json({ ok: true });
+  setTimeout(() => process.exit(0), 150);
+});
+
 app.get("/api/runtime/ffmpeg", async (req, res) => {
   res.json({ ffmpeg: await ffmpegStatus(), state: state() });
 });
@@ -4234,13 +4243,26 @@ if (process.env.NODE_ENV === "production") {
 
 const port = Number(process.env.PORT || 5173);
 const host = process.env.HOST || "127.0.0.1";
-const server = app.listen(port, host, () => {
+const server = app.listen(port, host);
+server.on("listening", () => {
   startSourcePreflightScheduler();
   startBriefDeliveryScheduler();
   console.log(`Pillar Brief running at http://${host}:${port}`);
   console.log(`SQLite database: ${dbPath}`);
 });
+let takeoverAttempts = 0;
 server.on("error", (error) => {
+  // An orphaned backend from a previous session can hold the port. Ask it to
+  // exit and retry so this process (the one the desktop shell tracks) wins.
+  if (error.code === "EADDRINUSE" && takeoverAttempts < 20) {
+    takeoverAttempts += 1;
+    if (takeoverAttempts === 1) {
+      console.error(`Port ${port} is in use; asking the previous Pillar Brief backend to exit.`);
+      fetch(`http://${host}:${port}/api/runtime/shutdown`, { method: "POST" }).catch(() => {});
+    }
+    setTimeout(() => server.listen(port, host), 500);
+    return;
+  }
   console.error(`Server failed to start on ${host}:${port}:`, error);
   process.exitCode = 1;
 });
