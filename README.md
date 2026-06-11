@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="public/assets/pillar-brief-app-logo.svg" alt="Pillar Brief" width="560" />
+  <img src="public/assets/readme-logo-banner.svg" alt="Pillar Brief" width="720" />
 </p>
 
 <p align="center">
