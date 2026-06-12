@@ -38,6 +38,17 @@
 
 ---
 
+## Latest Release
+
+**v0.1.2** improves desktop reliability for daily background use:
+
+- More reliable background brief delivery, generating state, and macOS notifications.
+- Sharper, cleaner macOS menu bar icon.
+- Fresh signed release assets for Apple Silicon Macs, Intel Macs, and Windows.
+
+See all versions on the
+[GitHub releases page](https://github.com/Transformation-Agency/pillar-brief/releases).
+
 ## What It Does
 
 Pillar Brief watches the sources you care about, filters for items published
