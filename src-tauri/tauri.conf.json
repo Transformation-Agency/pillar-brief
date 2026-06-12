@@ -32,7 +32,7 @@
     "shortDescription": "Local daily intelligence brief console.",
     "longDescription": "Pillar Brief packages a local intelligence brief console for macOS while sharing the same web backend used for self-hosting.",
     "macOS": {
-      "minimumSystemVersion": "13.0",
+      "minimumSystemVersion": "12.0",
       "signingIdentity": null,
       "entitlements": "entitlements.plist",
       "dmg": {

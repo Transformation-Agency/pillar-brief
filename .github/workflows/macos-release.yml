@@ -41,6 +41,7 @@ jobs:
       APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
       PILLAR_TARGET_TRIPLE: ${{ matrix.target }}
       CARGO_BUILD_TARGET: ${{ matrix.target }}
+      MACOSX_DEPLOYMENT_TARGET: "12.0"
 
     steps:
       - uses: actions/checkout@v4
@@ -85,7 +86,7 @@ jobs:
           git clone --depth 1 --branch v1.8.5 https://github.com/ggml-org/whisper.cpp.git "$RUNNER_TEMP/whisper.cpp"
           cmake -S "$RUNNER_TEMP/whisper.cpp" -B "$RUNNER_TEMP/whisper-build" \
             -DCMAKE_OSX_ARCHITECTURES=${{ matrix.osx_arch }} \
-            -DCMAKE_OSX_DEPLOYMENT_TARGET=13.0 \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=12.0 \
             -DCMAKE_BUILD_TYPE=Release \
             -DBUILD_SHARED_LIBS=OFF \
             -DGGML_NATIVE=OFF \
