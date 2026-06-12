@@ -43,6 +43,7 @@
 **v0.1.2** improves desktop reliability for daily background use:
 
 - More reliable background brief delivery, generating state, and macOS notifications.
+- Rebuilt Mac downloads for macOS 12 Monterey and newer.
 - Sharper, cleaner macOS menu bar icon.
 - Fresh signed release assets for Apple Silicon Macs, Intel Macs, and Windows.
 
