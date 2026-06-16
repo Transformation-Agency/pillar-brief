@@ -22,6 +22,11 @@ const SIDECAR_PREFIX: &str = "pillar-brief-backend";
 
 struct BackendProcess(Mutex<Option<Child>>);
 
+#[tauri::command]
+fn desktop_app_version() -> String {
+    env!("CARGO_PKG_VERSION").to_string()
+}
+
 fn project_root() -> PathBuf {
     if let Ok(root) = std::env::var("PILLAR_PROJECT_ROOT") {
         return PathBuf::from(root);
@@ -482,6 +487,9 @@ pub fn run() {
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             None,
         ))
+        .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .invoke_handler(tauri::generate_handler![desktop_app_version])
         .manage(BackendProcess(Mutex::new(None)))
         .setup(|app| {
             let backend_result = spawn_backend(app).and_then(|mut child| {

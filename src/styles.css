@@ -57,7 +57,7 @@ button { cursor: pointer; }
   border-bottom: 1px solid var(--line);
   background: rgba(255, 253, 249, 0.86);
   backdrop-filter: blur(18px);
-  overflow: hidden;
+  overflow: visible;
 }
 .brand {
   justify-self: start;
@@ -189,9 +189,80 @@ button { cursor: pointer; }
 }
 .header-actions {
   justify-self: end;
+  position: relative;
   display: flex;
   align-items: center;
-  gap: 15px;
+  gap: 10px;
+}
+.help-menu-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--ink-soft);
+  padding: 9px 10px;
+  font-weight: 800;
+}
+.help-menu-button:hover,
+.help-menu-button.active {
+  color: var(--ink);
+  border-color: var(--line);
+  background: rgba(255, 253, 249, .78);
+}
+.ico.tiny {
+  width: 15px;
+  height: 15px;
+}
+.help-menu {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 12px);
+  width: min(330px, calc(100vw - 32px));
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  background: rgba(255, 253, 249, .98);
+  box-shadow: var(--shadow);
+  padding: 12px;
+  z-index: 30;
+}
+.help-menu-head {
+  padding: 3px 4px 10px;
+  border-bottom: 1px solid var(--line);
+}
+.help-menu-head strong,
+.help-menu-head span,
+.help-update-status span {
+  display: block;
+}
+.help-menu-head strong {
+  font: 700 18px/1.05 var(--serif);
+}
+.help-menu-head span,
+.help-update-status span {
+  color: var(--muted);
+  font-size: 13px;
+}
+.help-update-status {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: start;
+  gap: 9px;
+  margin: 12px 0;
+  padding: 10px;
+  border-radius: 8px;
+  background: #f7f0e8;
+  color: var(--ink);
+}
+.help-update-status.warn {
+  background: #fff2ef;
+  color: #9f4c41;
+}
+.help-menu-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 .header-ico {
   width: 20px;
@@ -234,9 +305,35 @@ button { cursor: pointer; }
 .brand-logo.anthropic-logo { color: #16120f; background: #eee8df; font-size: 16px; }
 .brand-logo.openrouter-logo { color: #473b83; background: #eeebfb; font-size: 13px; }
 .brand-logo.xai-logo { color: #111; background: #f1eee9; font-size: 12px; }
+.brand-logo.google-calendar-logo { background: #fff; }
+.brand-logo.google-calendar-logo svg { width: 24px; height: 24px; fill: initial; }
 
 .main { min-width: 0; }
 .scroll { min-height: calc(100vh - 78px); }
+.desktop-update-banner {
+  width: min(calc(100% - 64px), 1220px);
+  margin: 18px auto 0;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  background: rgba(255, 253, 249, .94);
+  box-shadow: var(--small-shadow);
+  padding: 12px 14px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+.desktop-update-banner strong,
+.desktop-update-banner span {
+  display: block;
+}
+.desktop-update-banner strong {
+  font-size: 13px;
+}
+.desktop-update-banner span {
+  color: var(--muted);
+  font-size: 13px;
+}
 .page, .home-page {
   max-width: 1220px;
   margin: 0 auto;

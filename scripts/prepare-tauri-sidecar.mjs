@@ -198,3 +198,11 @@ if (fs.existsSync(whisperVendorDir)) {
 }
 
 console.log(`Prepared Tauri Node sidecar resources for ${hostTriple}${fs.existsSync(whisperVendorDir) ? " with whisper.cpp assets" : ""}`);
+
+const debugResourcesDir = path.join(tauriDir, "target", "debug", "resources");
+if (fs.existsSync(debugResourcesDir)) {
+  copyBundleAsset(backendDir, path.join(debugResourcesDir, "backend"));
+  if (fs.existsSync(whisperResourcesDir)) {
+    copyBundleAsset(whisperResourcesDir, path.join(debugResourcesDir, "whisper"));
+  }
+}

@@ -1,5 +1,6 @@
 import React from "react";
 import { createRoot } from "react-dom/client";
+import { desktopRuntime } from "./desktopRuntime.js";
 import {
   BookOpen,
   Bot,
@@ -7,6 +8,7 @@ import {
   Calendar,
   Check,
   ChevronDown,
+  CircleHelp,
   Clock,
   Copy,
   Database,
@@ -118,6 +120,12 @@ const sourceDefinitions = {
       spotify: { label: "Spotify link → RSS", fields: [["spotifyUrl", "Spotify episode/show URL", "https://open.spotify.com/episode/..."], ["feedUrl", "Resolved RSS feed", "Click Resolve RSS"], ["keywords", "Optional episode keywords", "AI, strategy"]] },
     },
   },
+  Calendar: {
+    credential: "Requires Google Calendar OAuth. Pillar Brief uses read-only access to include today's agenda in your brief.",
+    modes: {
+      google: { label: "Selected Google calendars", fields: [] },
+    },
+  },
   Newsletter: {
     credential: "Usually RSS/archive URL based. Private inbox newsletters need a separate email integration, not a generic locator.",
     modes: {
@@ -141,6 +149,7 @@ function defaultConfig(type) {
 
 function sourceLocator(type, config) {
   const mode = config.mode;
+  if (type === "Calendar") return config.calendarId === "primary" ? "primary" : "selected";
   if (type === "Reddit") {
     if (mode === "subreddit") return `subreddits:${config.subreddits || ""}`;
     if (mode === "user") return `u/${config.username || ""}`;
@@ -154,6 +163,14 @@ function sourceLocator(type, config) {
 
 function sourcePrerequisites(source, state) {
   const notes = [];
+  if (source.type === "Calendar" && state.connectors?.googleCalendar?.status !== "ready") {
+    notes.push({
+      key: "googleCalendar",
+      blocking: true,
+      label: "Needs Google Calendar",
+      body: "Connect Google Calendar before this source can fetch today's agenda.",
+    });
+  }
   if (source.type === "X" && state.connectors?.x?.status !== "ready") {
     notes.push({
       key: "x",
@@ -307,7 +324,9 @@ function Icon({ name }) {
     TikTok: Bot,
     upload: Upload,
     box: Box,
+    Calendar,
     calendar: Calendar,
+    help: CircleHelp,
     clock: Clock,
     monitor: Monitor,
     search: Search,
@@ -328,6 +347,17 @@ function Icon({ name }) {
 
 function BrandLogo({ name }) {
   const key = String(name || "").toLowerCase();
+  if (key.includes("calendar")) return <span className="brand-logo google-calendar-logo" aria-hidden="true"><svg viewBox="0 0 200 200">
+    <path fill="#fff" d="M152.632 47.368 105.264 42.105l-57.895 5.263-5.263 52.632 5.263 52.632 52.632 6.579 52.632-6.579 5.263-53.947-5.264-51.317z" />
+    <path fill="#1A73E8" d="M68.961 129.026c-3.934-2.658-6.658-6.539-8.145-11.671l9.132-3.763c.829 3.158 2.276 5.605 4.342 7.342 2.053 1.737 4.553 2.592 7.474 2.592 2.987 0 5.553-.908 7.697-2.724s3.224-4.132 3.224-6.934c0-2.868-1.132-5.211-3.395-7.026s-5.105-2.724-8.5-2.724h-5.276v-9.039h4.737c2.921 0 5.382-.789 7.382-2.368 2-1.579 3-3.737 3-6.487 0-2.447-.895-4.395-2.684-5.855s-4.053-2.197-6.803-2.197c-2.684 0-4.816.711-6.395 2.145s-2.724 3.197-3.447 5.276l-9.039-3.763c1.197-3.395 3.395-6.395 6.618-8.987 3.224-2.592 7.342-3.895 12.342-3.895 3.697 0 7.026.711 9.974 2.145 2.947 1.434 5.263 3.421 6.934 5.947 1.671 2.539 2.5 5.382 2.5 8.539 0 3.224-.776 5.947-2.329 8.184-1.553 2.237-3.461 3.947-5.724 5.145v.539c2.987 1.25 5.421 3.158 7.342 5.724 1.908 2.566 2.868 5.632 2.868 9.211s-.908 6.776-2.724 9.579c-1.816 2.803-4.329 5.013-7.513 6.618-3.197 1.605-6.789 2.421-10.776 2.421-4.606 0-8.869-1.329-12.803-3.987z" />
+    <path fill="#1A73E8" d="m125 83.711-9.974 7.25-5.013-7.605L128 70.382h6.895v61.197H125v-47.868z" />
+    <path fill="#EA4335" d="M152.632 200 200 152.632l-23.684-10.526-23.684 10.526-10.526 23.684L152.632 200z" />
+    <path fill="#34A853" d="m36.842 176.316 10.526 23.684h105.263v-47.368H47.368l-10.526 23.684z" />
+    <path fill="#4285F4" d="M15.789 0C7.066 0 0 7.066 0 15.789v136.842l23.684 10.526 23.684-10.526V47.368h105.263l10.526-23.684L152.632 0H15.789z" />
+    <path fill="#188038" d="M0 152.632v31.579C0 192.934 7.066 200 15.789 200h31.579v-47.368H0z" />
+    <path fill="#FBBC04" d="M152.632 47.368v105.263H200V47.368l-23.684-10.526-23.684 10.526z" />
+    <path fill="#1967D2" d="M200 47.368V15.789C200 7.066 192.934 0 184.211 0h-31.579v47.368H200z" />
+  </svg></span>;
   if (key.includes("youtube")) return <span className="brand-logo youtube" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M23.5 6.2a3 3 0 0 0-2.1-2.1C19.5 3.6 12 3.6 12 3.6s-7.5 0-9.4.5A3 3 0 0 0 .5 6.2 31 31 0 0 0 0 12a31 31 0 0 0 .5 5.8 3 3 0 0 0 2.1 2.1c1.9.5 9.4.5 9.4.5s7.5 0 9.4-.5a3 3 0 0 0 2.1-2.1A31 31 0 0 0 24 12a31 31 0 0 0-.5-5.8ZM9.6 15.6V8.4L15.8 12l-6.2 3.6Z" /></svg></span>;
   if (key.includes("reddit")) return <span className="brand-logo reddit" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M21.7 10.6a2.5 2.5 0 0 0-4.2-1.8c-1.3-.8-3-1.3-4.8-1.4l.8-3.7 2.6.6a2 2 0 1 0 .3-1.2l-3.3-.7a.7.7 0 0 0-.8.5l-1 4.5c-1.9.1-3.6.6-5 1.4a2.5 2.5 0 1 0-2.7 4.1 4.4 4.4 0 0 0-.1.9c0 3.5 3.8 6.3 8.5 6.3s8.5-2.8 8.5-6.3c0-.3 0-.6-.1-.9.8-.4 1.3-1.3 1.3-2.3ZM8.1 12.7a1.3 1.3 0 1 1 2.6 0 1.3 1.3 0 0 1-2.6 0Zm7.1 4.1c-.9.9-2.6 1-3.2 1s-2.3-.1-3.2-1a.6.6 0 0 1 .8-.9c.5.5 1.6.7 2.4.7.8 0 1.9-.2 2.4-.7a.6.6 0 1 1 .8.9Zm.7-2.8a1.3 1.3 0 1 1 0-2.6 1.3 1.3 0 0 1 0 2.6Z" /></svg></span>;
   if (key === "x" || key.includes("twitter")) return <span className="brand-logo x-logo" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M18.9 2h3.7l-8.1 9.2L24 22h-7.4l-5.8-6.9L4.2 22H.5l8.6-9.9L0 2h7.6l5.2 6.2L18.9 2Zm-1.3 18.1h2L6.5 3.8H4.3l13.3 16.3Z" /></svg></span>;
@@ -414,10 +444,144 @@ function useConsoleState() {
   return { state, setState, error, refresh, mutate };
 }
 
-function Shell({ route, setRoute, state, children }) {
+function useDesktopUpdates() {
+  const [updateState, setUpdateState] = React.useState({
+    isDesktop: false,
+    version: "",
+    status: "idle",
+    update: null,
+    message: "",
+    progress: "",
+  });
+
+  const checkForUpdates = React.useCallback(async ({ silent = false } = {}) => {
+    if (!desktopRuntime.isDesktop()) {
+      setUpdateState((current) => ({ ...current, isDesktop: false, status: "idle" }));
+      return null;
+    }
+    setUpdateState((current) => ({
+      ...current,
+      isDesktop: true,
+      status: silent ? "checking-silent" : "checking",
+      message: silent ? current.message : "Checking for updates...",
+      progress: "",
+    }));
+    try {
+      const [version, update] = await Promise.all([
+        desktopRuntime.appVersion(),
+        desktopRuntime.checkForUpdates(),
+      ]);
+      setUpdateState((current) => ({
+        ...current,
+        isDesktop: true,
+        version,
+        status: update ? "available" : "current",
+        update,
+        message: update ? `Version ${update.version} is ready to install.` : "Pillar Brief is up to date.",
+        progress: "",
+      }));
+      return update;
+    } catch (error) {
+      setUpdateState((current) => ({
+        ...current,
+        isDesktop: true,
+        status: silent ? "idle" : "error",
+        message: silent ? current.message : error.message,
+        progress: "",
+      }));
+      return null;
+    }
+  }, []);
+
+  const installUpdate = React.useCallback(async () => {
+    if (!updateState.update) return;
+    let downloaded = 0;
+    setUpdateState((current) => ({
+      ...current,
+      status: "installing",
+      message: `Downloading version ${current.update?.version || "update"}...`,
+      progress: "",
+    }));
+    try {
+      await desktopRuntime.downloadAndInstallUpdate(updateState.update, (event) => {
+        if (event.event === "Started") {
+          downloaded = 0;
+          setUpdateState((current) => ({
+            ...current,
+            progress: event.data?.contentLength ? `0 of ${Math.round(event.data.contentLength / 1024 / 1024)} MB` : "Download started",
+          }));
+        }
+        if (event.event === "Progress") {
+          downloaded += event.data?.chunkLength || 0;
+          setUpdateState((current) => ({
+            ...current,
+            progress: `${Math.max(1, Math.round(downloaded / 1024 / 1024))} MB downloaded`,
+          }));
+        }
+        if (event.event === "Finished") {
+          setUpdateState((current) => ({ ...current, progress: "Download complete" }));
+        }
+      });
+      setUpdateState((current) => ({
+        ...current,
+        status: "installed",
+        message: "Update installed. Restart Pillar Brief to finish.",
+        progress: "",
+      }));
+    } catch (error) {
+      setUpdateState((current) => ({
+        ...current,
+        status: "error",
+        message: error.message,
+        progress: "",
+      }));
+    }
+  }, [updateState.update]);
+
+  const restartApp = React.useCallback(() => desktopRuntime.restartApp(), []);
+
+  React.useEffect(() => {
+    if (!desktopRuntime.isDesktop()) return;
+    let cancelled = false;
+    desktopRuntime.appVersion().then((version) => {
+      if (!cancelled) setUpdateState((current) => ({ ...current, isDesktop: true, version }));
+    }).catch(() => {});
+    const timer = setTimeout(() => {
+      if (!cancelled) checkForUpdates({ silent: true });
+    }, 1200);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [checkForUpdates]);
+
+  return { ...updateState, checkForUpdates, installUpdate, restartApp };
+}
+
+function Shell({ route, setRoute, state, desktopUpdate, children }) {
+  const [helpOpen, setHelpOpen] = React.useState(false);
+  const helpRef = React.useRef(null);
   const activeSources = state?.sources?.filter((s) => s.status === "active").length || 0;
   const counts = { sources: activeSources, lenses: state?.briefConfig?.perspectiveLenses?.filter((l) => l.enabled !== false).length || 0 };
-  const owner = state?.briefConfig?.ownerName || defaultOwnerName;
+  const updateVisible = desktopUpdate?.isDesktop && ["available", "installed"].includes(desktopUpdate.status);
+  const updateBusy = ["checking", "checking-silent", "installing"].includes(desktopUpdate?.status);
+  const updateStatus = desktopUpdate?.status === "available"
+    ? `Update ${desktopUpdate.update?.version ? `v${desktopUpdate.update.version}` : ""} available`
+    : desktopUpdate?.status === "installed"
+      ? "Restart to finish updating"
+      : desktopUpdate?.status === "current"
+        ? "Pillar Brief is up to date"
+        : desktopUpdate?.status === "error"
+          ? "Update check failed"
+          : "Check for signed desktop updates";
+  React.useEffect(() => {
+    if (!helpOpen) return;
+    const onPointerDown = (event) => {
+      if (!helpRef.current?.contains(event.target)) setHelpOpen(false);
+    };
+    window.addEventListener("pointerdown", onPointerDown);
+    return () => window.removeEventListener("pointerdown", onPointerDown);
+  }, [helpOpen]);
   return <div className="app">
     <header className="app-header">
       <button className="brand" onClick={() => setRoute("overview")}>
@@ -428,9 +592,36 @@ function Shell({ route, setRoute, state, children }) {
             <Icon name={id} /><span>{label}</span>{counts[id] !== undefined && <b>{counts[id]}</b>}
           </button>)}
       </nav>
-      <div />
+      <div className="header-actions" ref={helpRef}>
+        <button type="button" className={`help-menu-button ${helpOpen ? "active" : ""}`} onClick={() => setHelpOpen((current) => !current)}>
+          <Icon name="help" /><span>Help</span><ChevronDown className="ico tiny" aria-hidden="true" />
+        </button>
+        {helpOpen && <div className="help-menu" role="menu">
+          <div className="help-menu-head">
+            <strong>Pillar Brief</strong>
+            <span>{desktopUpdate?.version ? `Version ${desktopUpdate.version}` : "Desktop app"}</span>
+          </div>
+          <div className={`help-update-status ${desktopUpdate?.status === "error" ? "warn" : ""}`}>
+            <Icon name={desktopUpdate?.status === "available" ? "download" : desktopUpdate?.status === "installed" ? "restart" : desktopUpdate?.status === "error" ? "x" : "check"} />
+            <span>{desktopUpdate?.isDesktop ? (desktopUpdate.progress || desktopUpdate.message || updateStatus) : "Updates are available in the desktop app."}</span>
+          </div>
+          {desktopUpdate?.isDesktop && <div className="help-menu-actions">
+            <Button type="button" icon="run" onClick={() => desktopUpdate.checkForUpdates()} disabled={updateBusy}>{desktopUpdate?.status === "checking" ? "Checking..." : "Check for Updates"}</Button>
+            {desktopUpdate.status === "available" && <Button type="button" icon="download" kind="primary" onClick={desktopUpdate.installUpdate}>Install Update</Button>}
+            {desktopUpdate.status === "installed" && <Button type="button" icon="restart" kind="primary" onClick={desktopUpdate.restartApp}>Restart to Update</Button>}
+            <Button type="button" icon="settings" onClick={() => { setHelpOpen(false); setRoute("settings"); }}>Open Update Settings</Button>
+          </div>}
+        </div>}
+      </div>
     </header>
     <main className="main">
+      {updateVisible && <div className="desktop-update-banner">
+        <div><strong>{desktopUpdate.status === "installed" ? "Update installed" : "Update available"}</strong><span>{desktopUpdate.message}</span></div>
+        <div className="row tight-row">
+          <Button type="button" icon="settings" onClick={() => setRoute("settings")}>Settings</Button>
+          {desktopUpdate.status === "installed" && <Button type="button" icon="restart" kind="primary" onClick={desktopUpdate.restartApp}>Restart</Button>}
+        </div>
+      </div>}
       <section className="scroll">{children}</section>
     </main>
   </div>;
@@ -780,6 +971,7 @@ function Sources({ state, mutate }) {
   };
   const sourceCredentialLabel = (source) => {
     if (source.type === "X" && state.connectors?.x?.apiKeySaved) return "configured";
+    if (source.type === "Calendar" && state.connectors?.googleCalendar?.status === "ready") return "configured";
     return source.credentialsStatus;
   };
   const sourceTypeChoices = [
@@ -790,6 +982,7 @@ function Sources({ state, mutate }) {
     ["Newsletter", "Journal / Library"],
     ["Podcast", "Podcast"],
     ["Reddit", "Reddit"],
+    ["Calendar", "Calendar"],
   ];
   const filteredSources = state.sources.filter((source) => {
     const text = `${source.name} ${source.type} ${source.locator} ${sourceDisplayLocator(source)}`.toLowerCase();
@@ -835,6 +1028,12 @@ function Sources({ state, mutate }) {
           <Select label="Watch mode" value={mode} onChange={(nextMode) => setForm({ ...form, config: { mode: nextMode } })} options={Object.entries(definition.modes).map(([key, value]) => ({ value: key, label: value.label }))} />
           {form.type === "X" && <div className="notice"><strong>Locked quick mode</strong><span>Each run reads at most 10 posts, excludes retweets and replies, and reuses a 1-hour cache. Spend controls are intentionally not configurable.</span></div>}
           {modeDefinition.fields.map(([key, label, placeholder]) => <Field key={key} label={label} value={form.config[key] || ""} onChange={(value) => updateConfig(key, value)} placeholder={placeholder} required={key !== "keywords" && key !== "region" && key !== "include" && key !== "sort" && key !== "order" && key !== "scope"} />)}
+          {form.type === "Calendar" && <div className={`notice ${state.connectors?.googleCalendar?.status === "ready" ? "" : "notice-warn"}`}>
+            <strong>{state.connectors?.googleCalendar?.status === "ready" ? "Google Calendar connected" : "Google Calendar required"}</strong>
+            <span>Use <span className="mono">primary</span> for the signed-in user's primary calendar. Connect Google Calendar in Settings before this source can fetch events.</span>
+          </div>}
+          {form.type === "Calendar" && <label className="check"><input type="checkbox" checked={form.config.includeAttendees !== false} onChange={(event) => updateConfig("includeAttendees", event.target.checked)} /> Include attendee names in brief context</label>}
+          {form.type === "Calendar" && <label className="check"><input type="checkbox" checked={form.config.includeDescriptions === true} onChange={(event) => updateConfig("includeDescriptions", event.target.checked)} /> Include event descriptions</label>}
           {form.type === "Podcast" && mode === "spotify" && <div className="row">
             <Button type="button" icon="run" onClick={resolveSpotify} disabled={!form.config.spotifyUrl || spotifyResolve.loading}>{spotifyResolve.loading ? "Resolving..." : "Resolve RSS"}</Button>
             {spotifyResolve.message && <Badge tone={spotifyResolve.tone}>{spotifyResolve.message}</Badge>}
@@ -1268,6 +1467,7 @@ function BriefArtifact({ run, compact = false }) {
   const rssFetches = artifact.rssFetches || [];
   const redditFetches = artifact.redditFetches || [];
   const webFetches = artifact.webFetches || [];
+  const calendarFetches = artifact.calendarFetches || [];
   const podcasts = artifact.podcastTranscriptions || [];
   return <article className={`brief-artifact ${compact ? "compact" : ""}`}>
     <div className="brief-headline">
@@ -1278,7 +1478,7 @@ function BriefArtifact({ run, compact = false }) {
       <Badge tone={issues.length ? "ok" : "warn"}>{issues.length ? `${issues.length} selected` : "no selected issues"}</Badge>
     </div>
     {artifact.onePageBrief && <section className="brief-section"><h3>One-Page Brief</h3><Markdown text={artifact.onePageBrief} /></section>}
-    {!compact && <details className="raw-json"><summary>Source diagnostics</summary><div className="brief-section">{xFetches.map((result) => <div className="brief-note" key={`${result.sourceId}-${result.sourceName}`}><strong>{result.sourceName}</strong><span>{result.ok === false ? result.error : result.skipped ? result.reason : `Quick mode: ${result.seen || 0} posts fetched, ${result.inserted || 0} new, est. cost $${Number(result.estimatedCostUsd || 0).toFixed(3)}.`}</span></div>)}{[...rssFetches, ...redditFetches, ...webFetches].map((result) => <div className="brief-note" key={`${result.sourceId}-${result.sourceName}`}><strong>{result.sourceName}</strong><span>{result.ok === false ? result.error : result.skipped ? result.reason : `${result.seen || 0} fetched, ${result.inserted || 0} new.`}</span></div>)}{podcasts.map((result) => <div className="brief-note" key={`${result.sourceId}-${result.sourceName}`}><strong>{result.sourceName}</strong><span>{result.transcribed ? `Transcribed ${result.episode?.title || "episode"}` : result.reason || result.error || "No transcript created."}</span></div>)}</div></details>}
+    {!compact && <details className="raw-json"><summary>Source diagnostics</summary><div className="brief-section">{xFetches.map((result) => <div className="brief-note" key={`${result.sourceId}-${result.sourceName}`}><strong>{result.sourceName}</strong><span>{result.ok === false ? result.error : result.skipped ? result.reason : `Quick mode: ${result.seen || 0} posts fetched, ${result.inserted || 0} new, est. cost $${Number(result.estimatedCostUsd || 0).toFixed(3)}.`}</span></div>)}{[...rssFetches, ...redditFetches, ...webFetches].map((result) => <div className="brief-note" key={`${result.sourceId}-${result.sourceName}`}><strong>{result.sourceName}</strong><span>{result.ok === false ? result.error : result.skipped ? result.reason : `${result.seen || 0} fetched, ${result.inserted || 0} new.`}</span></div>)}{calendarFetches.map((result) => <div className="brief-note" key={`${result.sourceId}-${result.sourceName}`}><strong>{result.sourceName}</strong><span>{result.ok === false ? result.error : result.skipped ? result.reason : `${result.today || result.seen || 0} calendar event${Number(result.today || result.seen || 0) === 1 ? "" : "s"} found.`}</span></div>)}{podcasts.map((result) => <div className="brief-note" key={`${result.sourceId}-${result.sourceName}`}><strong>{result.sourceName}</strong><span>{result.transcribed ? `Transcribed ${result.episode?.title || "episode"}` : result.reason || result.error || "No transcript created."}</span></div>)}</div></details>}
     <section className="brief-section">
       <h3>Selected Issues</h3>
       {issues.length ? <div className="issue-list">{issues.map((issue) => <a className="issue" key={issue.id || issue.url || issue.title} href={issue.url} target="_blank" rel="noreferrer">
@@ -1462,6 +1662,25 @@ function localPreferenceHints(briefPrompt = "") {
   return hints;
 }
 
+function defaultCalendarBriefSection() {
+  return {
+    key: "calendarAgenda",
+    label: "Today's Calendar",
+    enabled: true,
+    instruction: "Use today's connected calendar events to prepare me for the day: meetings, schedule shape, likely prep needs, conflicts, sequencing, focus blocks, and follow-up reminders. Treat calendar entries as private schedule context, not news.",
+    promptTarget: "standard",
+    promptRefId: "",
+  };
+}
+
+function putCalendarBriefSectionFirst(sections = [], addIfConnected = false) {
+  const usableSections = Array.isArray(sections) ? sections.filter(Boolean) : [];
+  const existing = usableSections.find((section) => section?.key === "calendarAgenda");
+  if (!existing && !addIfConnected) return usableSections;
+  const calendarSection = existing ? { ...defaultCalendarBriefSection(), ...existing, key: "calendarAgenda" } : defaultCalendarBriefSection();
+  return [calendarSection, ...usableSections.filter((section) => section?.key !== "calendarAgenda")];
+}
+
 function localBriefSetupDraft(briefPrompt = "", current = {}) {
   const owner = current.ownerName || defaultOwnerName;
   const prompt = String(briefPrompt || "").toLowerCase();
@@ -1482,7 +1701,7 @@ function localBriefSetupDraft(briefPrompt = "", current = {}) {
     productName: current.productName || "Pillar Brief",
     audienceContext: `A private daily brief for ${owner} focused on ${topicText}. Use only source items published today, with enough context to understand why they matter.${preferenceText}`,
     voiceRules: `Natural, direct, and useful. Prefer plain English, sharp bullets, and concrete takeaways. Avoid corporate stiffness, filler, fake certainty, and false-balance flattening of stated preferences.${preferenceHints.length ? " Keep stated worldview/taste/source preferences visible when source evidence supports them." : ""}`,
-    sections: [
+    sections: putCalendarBriefSectionFirst([
       { key: "topSignals", label: "Top Signals", enabled: true, instruction: "Lead with the most important items published today. Keep each item clear, specific, and tied to why it matters.", promptTarget: "standard", promptRefId: "" },
       { key: "sentimentRead", label: "Sentiment Read", enabled: true, instruction: `Summarize what people seem to be reacting to on X, Reddit, and other configured sources. Separate real signal from noise.${preferenceHints.length ? " Preserve the user's stated worldview/source preferences in the read when grounded in today's sources." : ""}`, promptTarget: "standard", promptRefId: "" },
       { key: "politicalRace", label: "Political Race", enabled: prompt.includes("politic") || prompt.includes("race"), instruction: `Cover meaningful political-race developments, polling signals, campaign moves, and narrative shifts from today.${preferenceHints.length ? " Keep explicit political framing preferences intact instead of smoothing them into generic neutrality." : ""}`, promptTarget: "standard", promptRefId: "" },
@@ -1490,7 +1709,7 @@ function localBriefSetupDraft(briefPrompt = "", current = {}) {
       { key: "marketImpact", label: "Market Impact", enabled: prompt.includes("market") || prompt.includes("crypto"), instruction: "Call out how the day’s events may affect markets, risk appetite, crypto, AI, or broader sentiment.", promptTarget: "standard", promptRefId: "" },
       { key: "whatToWatch", label: "What To Watch Next", enabled: true, instruction: "End with the next developments, questions, or indicators worth watching over the next 24-72 hours.", promptTarget: "standard", promptRefId: "" },
       { key: "sourceEvidence", label: "Source Evidence", enabled: true, instruction: "List the source items used, with links where available. Only include items published today.", promptTarget: "standard", promptRefId: "" },
-    ],
+    ], current.calendarConnected),
   };
 }
 
@@ -1600,7 +1819,7 @@ function ElevenLabsSetup({ state, mutate, refresh, compact = false, onSkip, onSa
 }
 
 function Onboarding({ state, mutate, refresh }) {
-  const steps = ["welcome", "model", "intent", "setup", "perspectives", "sources", "access", "audio", "telegram", "schedule", "review"];
+  const steps = ["welcome", "model", "intent", "setup", "perspectives", "sources", "access", "calendar", "audio", "telegram", "schedule", "review"];
   const readiness = state.onboarding.readiness || {};
   const savedOwnerName = state.briefConfig?.ownerName || "";
   const hasSavedFirstName = !isDefaultOwnerName(savedOwnerName);
@@ -1653,6 +1872,7 @@ function Onboarding({ state, mutate, refresh }) {
   const [sttStatus, setSttStatus] = React.useState(state.runtime?.stt || null);
   const [sttBusy, setSttBusy] = React.useState(false);
   const [sttMessage, setSttMessage] = React.useState("");
+  const [calendarMessage, setCalendarMessage] = React.useState("");
   const [perspectivePrompt, setPerspectivePrompt] = React.useState("");
   const [perspectiveDrafts, setPerspectiveDrafts] = React.useState(state.briefConfig?.perspectiveLenses || []);
   const [perspectiveMessage, setPerspectiveMessage] = React.useState("");
@@ -1666,6 +1886,7 @@ function Onboarding({ state, mutate, refresh }) {
   const stopRecorderRef = React.useRef(null);
   const timezone = state.briefConfig.deliveryTimezone || Intl.DateTimeFormat().resolvedOptions().timeZone || "America/Denver";
   const timezones = timezoneOptions(timezone);
+  const googleCalendarConnected = state.connectors?.googleCalendar?.status === "ready";
   const go = async (next) => {
     setStep(next);
     await mutate("/api/onboarding", { currentStep: next, briefPrompt, sourceSuggestions: suggestions, briefConfigDraft: briefDraft }, "PATCH");
@@ -1772,7 +1993,7 @@ function Onboarding({ state, mutate, refresh }) {
       await refresh();
     } catch (error) {
       if (/not found|cannot\s+(post|get)|404/i.test(error.message || "")) {
-        const draft = localBriefSetupDraft(briefPrompt, { ...state.briefConfig, ownerName: firstName.trim() || state.briefConfig.ownerName });
+        const draft = localBriefSetupDraft(briefPrompt, { ...state.briefConfig, ownerName: firstName.trim() || state.briefConfig.ownerName, calendarConnected: googleCalendarConnected });
         setBriefDraft(draft);
         setBriefDraftMessage(`Built a starter setup locally. Review and apply ${draft.sections.length} sections.`);
       } else {
@@ -1975,7 +2196,7 @@ function Onboarding({ state, mutate, refresh }) {
       await refresh();
       setSourceMessage(`${chosen.length} source${chosen.length === 1 ? "" : "s"} added.`);
       setPendingSourceIds(new Set());
-      await go("audio");
+      await go("calendar");
     } catch (error) {
       setSourceMessage(error.message);
     } finally {
@@ -2076,6 +2297,33 @@ function Onboarding({ state, mutate, refresh }) {
     }
     await saveChosenSources(ready);
   };
+  const startCalendarOAuth = async () => {
+    setCalendarMessage("");
+    try {
+      const result = await api("/api/google-calendar/oauth/start", { method: "POST", body: JSON.stringify({}) });
+      await refresh();
+      setCalendarMessage("Google consent opened. When it says connected, return here and refresh status.");
+      await openExternalUrl(result.authUrl);
+    } catch (error) {
+      setCalendarMessage(error.message || "Could not start Google Calendar connection.");
+    }
+  };
+  const refreshCalendarStatus = async () => {
+    setCalendarMessage("");
+    try {
+      if (googleCalendarConnected) {
+        await api("/api/google-calendar/calendars", { method: "POST", body: JSON.stringify({}) });
+        setCalendarMessage("Google Calendar is connected. Brief Setup includes Today's Calendar at the top.");
+      } else {
+        await api("/api/google-calendar/test", { method: "POST", body: JSON.stringify({}) });
+        setCalendarMessage("Google Calendar is connected. Brief Setup includes Today's Calendar at the top.");
+      }
+      await refresh();
+    } catch (error) {
+      setCalendarMessage(error.message || "Google Calendar is not connected yet.");
+      await refresh();
+    }
+  };
   const saveDelivery = async (patch) => {
     await mutate("/api/brief-config", { ...state.briefConfig, deliveryTimezone: timezone, ...patch }, "PATCH");
   };
@@ -2094,14 +2342,14 @@ function Onboarding({ state, mutate, refresh }) {
   return <div className="onboarding-shell">
     <aside className="onboarding-rail">
       <PillarBriefLockup />
-      <div className="onboarding-progress">{steps.map((id, index) => <button key={id} className={index === stepIndex ? "active" : index < stepIndex ? "done" : ""} onClick={() => setStep(id)}><b>{index + 1}</b><span>{id === "intent" ? "Brief" : id === "setup" ? "Setup" : id === "perspectives" ? "Lenses" : id === "access" ? "Access" : id === "audio" ? "Audio" : id}</span></button>)}</div>
+      <div className="onboarding-progress">{steps.map((id, index) => <button key={id} className={index === stepIndex ? "active" : index < stepIndex ? "done" : ""} onClick={() => setStep(id)}><b>{index + 1}</b><span>{id === "intent" ? "Brief" : id === "setup" ? "Setup" : id === "perspectives" ? "Lenses" : id === "access" ? "Access" : id === "calendar" ? "Calendar" : id === "audio" ? "Audio" : id}</span></button>)}</div>
     </aside>
     <main className="onboarding-main">
       <button className="onboarding-skip" type="button" onClick={skipOnboarding}><Icon name="x" />Skip and set up manually</button>
       {step === "welcome" && <section className="onboarding-panel">
         <Badge>First run</Badge>
         <h1>Set up your daily intelligence brief.</h1>
-        <p>We will personalize the brief, connect a model, learn what you want covered, suggest real sources, pair Telegram, and set the delivery time.</p>
+        <p>We will personalize the brief, connect a model, learn what you want covered, suggest real sources, optionally add your calendar, pair Telegram, and set the delivery time.</p>
         <form className="form onboarding-form" onSubmit={async (event) => { event.preventDefault(); if (await saveFirstName()) await go("model"); }}>
           <Field label="Your first name" value={firstName} onChange={(value) => { setFirstName(value); if (nameMessage) setNameMessage(""); }} placeholder="First name" required />
           {nameMessage && <p className="warn-text">{nameMessage}</p>}
@@ -2110,6 +2358,7 @@ function Onboarding({ state, mutate, refresh }) {
         <div className="onboarding-cards">
           <div><Icon name="settings" /><strong>Model</strong><span>Used to analyze and write the brief.</span></div>
           <div><Icon name="sources" /><strong>Sources</strong><span>AI suggests what to monitor from your prompt.</span></div>
+          <div><Icon name="calendar" /><strong>Calendar</strong><span>Optional agenda context for today's prep.</span></div>
           <div><Icon name="telegram" /><strong>Telegram</strong><span>One-button pairing. No chat ID hunting.</span></div>
         </div>
       </section>}
@@ -2254,11 +2503,32 @@ function Onboarding({ state, mutate, refresh }) {
         <div className="row"><Button onClick={() => go("sources")}>Back</Button><Button icon="plus" kind="primary" disabled={savingSources || !pendingSources.length} onClick={continueAfterAccess}>{savingSources ? "Adding..." : "Continue with ready sources"}</Button></div>
         {sourceMessage && <p className={sourceMessage.includes("added") || sourceMessage.includes("Skipped") ? "ok-text" : "warn-text"}>{sourceMessage}</p>}
       </section>}
+      {step === "calendar" && <section className="onboarding-panel onboarding-panel-wide">
+        <h1>Add your calendar.</h1>
+        <p>Optional: connect Google Calendar so each daily brief starts with what is on your agenda, what to prepare for, schedule conflicts, focus windows, and likely follow-ups.</p>
+        <div className="setup-card">
+          <div className="setup-card-head">
+            <BrandLogo name="Calendar" />
+            <div><h3>Google Calendar</h3><p>Pillar Brief requests read-only access. Calendar events are used as private schedule context, not as public news sources.</p></div>
+            <Badge tone={googleCalendarConnected ? "ok" : "muted"}>{googleCalendarConnected ? "Connected" : "Optional"}</Badge>
+          </div>
+          <div className="notice">
+            <strong>How it changes the brief</strong>
+            <span>When connected, Brief Setup gets a first section called Today's Calendar. You can edit or disable that section later, and choose which calendars are included from Settings.</span>
+          </div>
+          <div className="setup-link-row">
+            <Button type="button" icon="external" onClick={startCalendarOAuth}>{googleCalendarConnected ? "Reconnect Google Calendar" : "Connect Google Calendar"}</Button>
+            <Button type="button" icon="run" onClick={refreshCalendarStatus}>Refresh status</Button>
+          </div>
+          {calendarMessage && <p className={calendarMessage.includes("connected") || calendarMessage.includes("opened") ? "ok-text" : "warn-text"}>{calendarMessage}</p>}
+        </div>
+        <div className="row"><Button onClick={() => go("sources")}>Back</Button><Button onClick={() => go("audio")}>Skip calendar</Button><Button kind="primary" onClick={() => go("audio")}>Continue</Button></div>
+      </section>}
       {step === "audio" && <section className="onboarding-panel onboarding-panel-wide">
         <h1>Add audio briefs.</h1>
         <p>Optional: connect ElevenLabs to listen to generated briefs and attach MP3 audio after Telegram text delivery.</p>
         <ElevenLabsSetup state={state} mutate={mutate} refresh={refresh} onSkip={() => go("telegram")} onSaved={() => go("telegram")} />
-        <div className="row"><Button onClick={() => go("sources")}>Back</Button><Button kind="primary" onClick={() => go("telegram")}>Continue</Button></div>
+        <div className="row"><Button onClick={() => go("calendar")}>Back</Button><Button kind="primary" onClick={() => go("telegram")}>Continue</Button></div>
       </section>}
       {step === "telegram" && <section className="onboarding-panel onboarding-panel-wide">
         <h1>Pair Telegram.</h1>
@@ -2282,7 +2552,7 @@ function Onboarding({ state, mutate, refresh }) {
       {step === "review" && <section className="onboarding-panel">
         <h1>Ready to open the app.</h1>
         <div className="readiness-list">
-          {[["First name saved", reviewReadiness.ownerNameReady, false], ["Model connected", reviewReadiness.modelReady, false], ["Brief prompt saved", reviewReadiness.briefPromptSaved, false], ["Sources added", reviewReadiness.sourceReady, false], ["Perspective lenses", (state.briefConfig?.perspectiveLenses || []).length > 0, true], ["Audio brief", state.tts?.status === "ready", true], ["Telegram paired", reviewReadiness.telegramReady, true], ["Schedule set", reviewReadiness.scheduleSet, false]].map(([label, ok, optional]) => <div key={label}><Icon name={ok ? "check" : optional ? "volume" : "x"} /><span>{label}</span><Badge tone={ok ? "ok" : optional ? "muted" : "warn"}>{ok ? "Done" : optional ? "Optional" : "Needs setup"}</Badge></div>)}
+          {[["First name saved", reviewReadiness.ownerNameReady, false], ["Model connected", reviewReadiness.modelReady, false], ["Brief prompt saved", reviewReadiness.briefPromptSaved, false], ["Sources added", reviewReadiness.sourceReady, false], ["Perspective lenses", (state.briefConfig?.perspectiveLenses || []).length > 0, true], ["Google Calendar", googleCalendarConnected, true], ["Audio brief", state.tts?.status === "ready", true], ["Telegram paired", reviewReadiness.telegramReady, true], ["Schedule set", reviewReadiness.scheduleSet, false]].map(([label, ok, optional]) => <div key={label}><Icon name={ok ? "check" : optional ? "volume" : "x"} /><span>{label}</span><Badge tone={ok ? "ok" : optional ? "muted" : "warn"}>{ok ? "Done" : optional ? "Optional" : "Needs setup"}</Badge></div>)}
         </div>
         <div className="row"><Button onClick={() => go(firstIncomplete())}>Fix missing step</Button><Button onClick={skipOnboarding}>Finish later</Button><Button icon="check" kind="accent" disabled={!canComplete} onClick={complete}>Finish onboarding</Button></div>
       </section>}
@@ -2333,11 +2603,15 @@ function Audit({ state }) {
   </Page>;
 }
 
-function Settings({ state, mutate, refresh }) {
+function Settings({ state, mutate, refresh, desktopUpdate }) {
   const [connectorModal, setConnectorModal] = React.useState(false);
   const [editingProvider, setEditingProvider] = React.useState("");
   const [telegramModal, setTelegramModal] = React.useState(false);
   const [xModal, setXModal] = React.useState(false);
+  const [googleCalendarModal, setGoogleCalendarModal] = React.useState(false);
+  const [googleCalendarSelection, setGoogleCalendarSelection] = React.useState(state.connectors?.googleCalendar?.selectedCalendarIds || ["primary"]);
+  const [googleCalendarSelectionDirty, setGoogleCalendarSelectionDirty] = React.useState(false);
+  const [googleCalendarMessage, setGoogleCalendarMessage] = React.useState("");
   const [model, setModel] = React.useState({
     enabled: true,
     provider: state.model.provider || "openai",
@@ -2387,6 +2661,10 @@ function Settings({ state, mutate, refresh }) {
   React.useEffect(() => {
     setSettingsSttStatus(state.runtime?.stt || null);
   }, [state.runtime?.stt]);
+  React.useEffect(() => {
+    if (googleCalendarSelectionDirty) return;
+    setGoogleCalendarSelection(state.connectors?.googleCalendar?.selectedCalendarIds || ["primary"]);
+  }, [state.connectors?.googleCalendar?.selectedCalendarIds, googleCalendarSelectionDirty]);
   const saveModel = (e) => {
     e.preventDefault();
     mutate("/api/model", { ...model, enabled: true }, "PATCH").then(() => setEditingProvider(""));
@@ -2394,6 +2672,74 @@ function Settings({ state, mutate, refresh }) {
   const saveXConnector = (e) => {
     e.preventDefault();
     mutate("/api/connectors/x", { ...xConnector, enabled: true }, "PATCH").then(() => setXModal(false));
+  };
+  const startGoogleCalendarOAuth = async (e) => {
+    e.preventDefault();
+    setGoogleCalendarMessage("");
+    try {
+      const result = await api("/api/google-calendar/oauth/start", { method: "POST", body: JSON.stringify({}) });
+      await refresh();
+      setGoogleCalendarMessage("Google consent opened. Complete it, then return here and refresh calendars.");
+      await openExternalUrl(result.authUrl);
+    } catch (error) {
+      setGoogleCalendarMessage(error.message);
+    }
+  };
+  const testGoogleCalendar = async () => {
+    setGoogleCalendarMessage("");
+    try {
+      await api("/api/google-calendar/test", { method: "POST", body: JSON.stringify({}) });
+      setGoogleCalendarMessage("Google Calendar is connected and ready.");
+      await refresh();
+    } catch (error) {
+      setGoogleCalendarMessage(error.message);
+      await refresh();
+    }
+  };
+  const refreshGoogleCalendars = async () => {
+    setGoogleCalendarMessage("");
+    try {
+      const result = await api("/api/google-calendar/calendars", { method: "POST", body: JSON.stringify({}) });
+      setGoogleCalendarSelection(result.selectedCalendarIds || ["primary"]);
+      setGoogleCalendarSelectionDirty(false);
+      setGoogleCalendarMessage("Calendar list refreshed.");
+      await refresh();
+    } catch (error) {
+      setGoogleCalendarMessage(error.message);
+      await refresh();
+    }
+  };
+  const saveGoogleCalendarSelection = async () => {
+    setGoogleCalendarMessage("");
+    try {
+      await mutate("/api/google-calendar/calendars", { selectedCalendarIds: googleCalendarSelection }, "PATCH");
+      setGoogleCalendarSelectionDirty(false);
+      setGoogleCalendarMessage("Calendar selection saved.");
+    } catch (error) {
+      setGoogleCalendarMessage(error.message);
+    }
+  };
+  const toggleGoogleCalendar = (calendarId) => {
+    setGoogleCalendarSelectionDirty(true);
+    setGoogleCalendarSelection((current) => {
+      if (current.includes(calendarId)) {
+        const next = current.filter((item) => item !== calendarId);
+        return next.length ? next : current;
+      }
+      return [...current, calendarId];
+    });
+  };
+  const closeGoogleCalendarModal = () => {
+    setGoogleCalendarSelection(state.connectors?.googleCalendar?.selectedCalendarIds || ["primary"]);
+    setGoogleCalendarSelectionDirty(false);
+    setGoogleCalendarModal(false);
+  };
+  const disconnectGoogleCalendar = async () => {
+    setGoogleCalendarMessage("");
+    await mutate("/api/google-calendar/disconnect", {}, "POST");
+    setGoogleCalendarSelection(["primary"]);
+    setGoogleCalendarSelectionDirty(false);
+    setGoogleCalendarMessage("Google Calendar disconnected.");
   };
   const saveTelegram = (e) => {
     e.preventDefault();
@@ -2439,10 +2785,12 @@ function Settings({ state, mutate, refresh }) {
   }, [editingProvider, model.apiKey, detectModels, state.model.credentialStatus, state.model.provider, state.model.providerCredentials]);
   const modelConnected = state.model.status === "ready";
   const xConnected = state.connectors?.x?.status === "ready";
+  const googleCalendarConnected = state.connectors?.googleCalendar?.status === "ready";
   const telegramConnected = state.telegram?.enabled && state.telegram?.chatId && state.telegram?.botToken;
   const providerRows = modelProviderRows;
   const researchRows = [
     { service: "X (Twitter)", sub: "Search and monitor posts", type: "Social", logo: "X", status: xConnected ? "Connected" : "Needs token", connected: xConnected, action: "x" },
+    { service: "Google Calendar", sub: "Add today's agenda to briefs", type: "Calendar", logo: "Calendar", status: googleCalendarConnected ? "Connected" : state.connectors?.googleCalendar?.status === "needs consent" ? "Needs consent" : "Needs OAuth", connected: googleCalendarConnected, action: "googleCalendar" },
     { service: "Reddit", sub: "Monitor subreddits and posts", type: "Social", logo: "Reddit", status: "Available", connected: true },
     { service: "Web Search", sub: "General web search", type: "Search", logo: "Web", status: "Available", connected: true },
     { service: "YouTube", sub: "Channels, uploads, and transcripts", type: "Video", logo: "YouTube", status: "Available", connected: true },
@@ -2509,6 +2857,16 @@ function Settings({ state, mutate, refresh }) {
       setSettingsSttBusy(false);
     }
   };
+  const updateTone = desktopUpdate?.status === "current" || desktopUpdate?.status === "installed" ? "ok" : desktopUpdate?.status === "error" ? "warn" : "muted";
+  const updateLabel = desktopUpdate?.status === "available"
+    ? "Update available"
+    : desktopUpdate?.status === "installing"
+      ? "Installing"
+      : desktopUpdate?.status === "installed"
+        ? "Restart required"
+        : desktopUpdate?.status === "current"
+          ? "Up to date"
+          : "Desktop only";
   return <Page
     title="Settings"
     desc="Configure the models, services, and APIs used to analyze, research, and deliver your brief."
@@ -2516,6 +2874,27 @@ function Settings({ state, mutate, refresh }) {
     wide
   >
     <div className="settings-dashboard">
+      {desktopUpdate?.isDesktop && <section className="panel connector-card">
+        <div className="connector-head">
+          <div className="connector-title"><span className="connector-icon blue"><Icon name="download" /></span><div><h2>App Updates</h2><p>Install signed Pillar Brief desktop releases from GitHub.</p></div></div>
+          <Badge tone={updateTone}>{updateLabel}</Badge>
+        </div>
+        <div className="connector-row dependency-row">
+          <div className="connector-name"><span className="source-icon-box"><Icon name="download" /></span><div><strong>Pillar Brief desktop</strong><small>Current version {desktopUpdate.version || "unknown"}</small></div></div>
+          <span>GitHub Releases</span>
+          <Badge tone={updateTone}>{desktopUpdate.update?.version ? `v${desktopUpdate.update.version}` : updateLabel}</Badge>
+          <span>{desktopUpdate.progress || desktopUpdate.message || "Check for signed updates."}</span>
+          <div className="row tight-row">
+            <Button type="button" icon="run" onClick={() => desktopUpdate.checkForUpdates()} disabled={desktopUpdate.status === "checking" || desktopUpdate.status === "installing"}>{desktopUpdate.status === "checking" ? "Checking..." : "Check"}</Button>
+            {desktopUpdate.status === "available" && <Button type="button" icon="download" kind="primary" onClick={desktopUpdate.installUpdate}>Install</Button>}
+            {desktopUpdate.status === "installed" && <Button type="button" icon="restart" kind="primary" onClick={desktopUpdate.restartApp}>Restart</Button>}
+          </div>
+        </div>
+        <div className={`notice ${desktopUpdate.status === "error" ? "notice-warn" : ""}`}>
+          <strong>{desktopUpdate.status === "available" ? "A signed update is ready" : desktopUpdate.status === "installed" ? "Restart to finish updating" : "Automatic update checks are enabled"}</strong>
+          <span>{desktopUpdate.message || "Pillar Brief checks once on startup and lets you install from Settings."}</span>
+        </div>
+      </section>}
       <section className="panel connector-card">
         <div className="connector-head">
           <div className="connector-title"><span className="connector-icon purple"><Icon name="run" /></span><div><h2>Models for Analysis</h2><p>AI models used to analyze information and generate your brief.</p></div></div>
@@ -2559,7 +2938,7 @@ function Settings({ state, mutate, refresh }) {
             <span>{row.type}</span>
             <Badge tone={row.connected ? "ok" : "muted"}>{row.status}</Badge>
             <span>{row.connected ? "Ready" : "-"}</span>
-            <Button type="button" icon="pencil" onClick={() => row.action === "x" ? setXModal(true) : null}>{row.action === "x" ? "Edit" : "View"}</Button>
+            <Button type="button" icon="pencil" onClick={() => row.action === "x" ? setXModal(true) : row.action === "googleCalendar" ? setGoogleCalendarModal(true) : null}>{row.action === "x" || row.action === "googleCalendar" ? "Edit" : "View"}</Button>
           </div>)}
         </div>
       </section>
@@ -2631,6 +3010,7 @@ function Settings({ state, mutate, refresh }) {
           <button type="button" onClick={() => openProvider("xai")}><BrandLogo name="xai" /><strong>Grok</strong><span>Add or switch to xAI Grok models.</span></button>
           <button type="button" onClick={() => { setConnectorModal(false); setTelegramModal(true); }}><BrandLogo name="Telegram" /><strong>Telegram delivery</strong><span>Bot token, chat ID, and command routing.</span></button>
           <button type="button" onClick={() => { setConnectorModal(false); setXModal(true); }}><BrandLogo name="X" /><strong>X search API</strong><span>Official bearer-token recent search.</span></button>
+          <button type="button" onClick={() => { setConnectorModal(false); setGoogleCalendarModal(true); }}><BrandLogo name="Calendar" /><strong>Google Calendar</strong><span>Read today's agenda into each brief.</span></button>
           <button type="button" onClick={() => setConnectorModal(false)}><Icon name="volume" /><strong>ElevenLabs audio</strong><span>Use the Audio Briefs settings below.</span></button>
           <button type="button" onClick={() => setConnectorModal(false)}><BrandLogo name="Reddit" /><strong>Public research connectors</strong><span>Reddit, RSS, web, YouTube, and podcast sources.</span></button>
         </div>
@@ -2662,6 +3042,29 @@ function Settings({ state, mutate, refresh }) {
         <div className="modal-actions"><Button type="button" onClick={() => setXModal(false)}>Cancel</Button><Button icon="save" kind="primary">Save X API</Button></div>
       </form>
     </div>}
+    {googleCalendarModal && <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) closeGoogleCalendarModal(); }}>
+      <form className="modal-card connector-modal form" onSubmit={startGoogleCalendarOAuth}>
+        <div className="modal-head"><div><h2>Google Calendar</h2><p>Connect read-only calendar access so Pillar Brief can include today's agenda.</p></div><button type="button" onClick={closeGoogleCalendarModal}><Icon name="x" /></button></div>
+        <div className="notice">
+          <strong>Read-only access</strong>
+          <span>Pillar Brief requests permission to view calendar events and calendar names so you can choose which calendars appear in your brief.</span>
+        </div>
+        <p className="hint">Uses the official Pillar Brief Google OAuth client. Tokens stay in this app's local data store.</p>
+        <div className={`notice ${googleCalendarConnected ? "" : "notice-warn"}`}>
+          <strong>{googleCalendarConnected ? "Google Calendar ready" : "Google Calendar not connected"}</strong>
+          <span>{state.connectors?.googleCalendar?.lastError || googleCalendarMessage || "Connect Google, then choose which calendars should feed your daily brief."}</span>
+        </div>
+        {googleCalendarConnected && <div className="connector-fields">
+          <div className="connector-label">Calendars</div>
+          {(state.connectors?.googleCalendar?.calendars || []).length ? state.connectors.googleCalendar.calendars.map((calendar) => <label className="check" key={calendar.id}>
+            <input type="checkbox" checked={googleCalendarSelection.includes(calendar.id)} onChange={() => toggleGoogleCalendar(calendar.id)} />
+            {calendar.summary || calendar.id}{calendar.primary ? " (primary)" : ""}
+          </label>) : <p className="hint">Refresh calendars to load your available Google calendars.</p>}
+        </div>}
+        {googleCalendarMessage && <p className={googleCalendarMessage.includes("ready") || googleCalendarMessage.includes("opened") || googleCalendarMessage.includes("disconnected") ? "ok-text" : "warn-text"}>{googleCalendarMessage}</p>}
+        <div className="modal-actions"><Button type="button" onClick={closeGoogleCalendarModal}>Cancel</Button>{googleCalendarConnected && <Button type="button" icon="run" onClick={refreshGoogleCalendars}>Refresh calendars</Button>}{googleCalendarConnected && <Button type="button" icon="save" onClick={saveGoogleCalendarSelection}>Save calendars</Button>}<Button type="button" icon="run" onClick={testGoogleCalendar}>Test</Button>{googleCalendarConnected && <Button type="button" icon="trash" onClick={disconnectGoogleCalendar}>Disconnect</Button>}<Button icon="save" kind="primary">{googleCalendarConnected ? "Reconnect Google" : "Connect Google"}</Button></div>
+      </form>
+    </div>}
   </Page>;
 }
 
@@ -2683,6 +3086,7 @@ function App() {
   const [route, setRoute] = React.useState(location.hash.slice(1) || "overview");
   const [runState, setRunState] = React.useState({ status: "idle", stepIndex: 0, error: "" });
   const { state, error, mutate, refresh } = useConsoleState();
+  const desktopUpdate = useDesktopUpdates();
   const requestRoute = React.useCallback((nextRoute) => {
     const next = nextRoute || "overview";
     if (route === "briefSetup" && next !== "briefSetup" && window.__pillarBriefUnsavedBriefSetup) {
@@ -2749,9 +3153,9 @@ function App() {
     sources: <Sources state={state} mutate={mutate} />,
     lenses: <Lenses state={state} mutate={mutate} />,
     telegram: <Telegram state={state} mutate={mutate} refresh={refresh} />,
-    settings: <Settings state={state} mutate={mutate} refresh={refresh} />,
+    settings: <Settings state={state} mutate={mutate} refresh={refresh} desktopUpdate={desktopUpdate} />,
   };
-  return <Shell route={route} setRoute={requestRoute} state={state}>{screens[route] || screens.overview}</Shell>;
+  return <Shell route={route} setRoute={requestRoute} state={state} desktopUpdate={desktopUpdate}>{screens[route] || screens.overview}</Shell>;
 }
 
 createRoot(document.getElementById("root")).render(<App />);

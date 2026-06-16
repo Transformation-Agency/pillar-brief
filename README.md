@@ -15,13 +15,13 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/Transformation-Agency/pillar-brief/releases/download/v0.1.2/Pillar.Brief_0.1.2_aarch64.dmg">
+  <a href="https://github.com/Transformation-Agency/pillar-brief/releases/download/v0.1.3/Pillar.Brief_0.1.3_aarch64.dmg">
     <img src="https://img.shields.io/badge/Download-M--series%20Macs-black?style=for-the-badge&logo=apple" alt="Download for M-series Macs" />
   </a>
-  <a href="https://github.com/Transformation-Agency/pillar-brief/releases/download/v0.1.2/Pillar.Brief_0.1.2_x64.dmg">
+  <a href="https://github.com/Transformation-Agency/pillar-brief/releases/download/v0.1.3/Pillar.Brief_0.1.3_x64.dmg">
     <img src="https://img.shields.io/badge/Download-Intel%20Macs-333333?style=for-the-badge&logo=apple" alt="Download for Intel Macs" />
   </a>
-  <a href="https://github.com/Transformation-Agency/pillar-brief/releases/download/v0.1.2/Pillar.Brief_0.1.2_x64-setup.exe">
+  <a href="https://github.com/Transformation-Agency/pillar-brief/releases/download/v0.1.3/Pillar.Brief_0.1.3_x64-setup.exe">
     <img src="https://img.shields.io/badge/Download-Windows-0078D4?style=for-the-badge" alt="Download for Windows" />
   </a>
 </p>
@@ -40,12 +40,13 @@
 
 ## Latest Release
 
-**v0.1.2** improves desktop reliability for daily background use:
+**v0.1.3** adds Google Calendar agenda context and signed desktop updates:
 
-- More reliable background brief delivery, generating state, and macOS notifications.
-- Rebuilt Mac downloads for macOS 12 Monterey and newer.
-- Sharper, cleaner macOS menu bar icon.
-- Fresh signed release assets for Apple Silicon Macs, Intel Macs, and Windows.
+- Optional Google Calendar onboarding and Settings flow with read-only agenda access.
+- A new editable "Today's Calendar" brief section that appears first when Calendar is connected.
+- Secretless desktop Google OAuth using the installed-app PKCE flow.
+- In-app signed update checks, install, and restart actions from Settings and the Help menu.
+- Refreshed Pillar Brief branding and the actual Google Calendar connector icon.
 
 See all versions on the
 [GitHub releases page](https://github.com/Transformation-Agency/pillar-brief/releases).
@@ -70,12 +71,15 @@ and Telegram destination.
 - OpenAI, Anthropic, OpenRouter, Gemini, and custom OpenAI-compatible model settings
 - Source adapters for RSS, web pages, Reddit, X search, podcasts, YouTube, and
   newsletters
+- Optional Google Calendar agenda context for today's meetings, prep, conflicts,
+  focus windows, and follow-ups
 - Locked X quick mode to reduce API usage
 - Today-only source selection for generated briefs
 - Editable brief setup with section-level prompts
 - Scheduled and manual generation
 - Automatic Telegram delivery in Markdown
-- Tauri desktop packaging for a local macOS app
+- Signed desktop updates for Tauri builds distributed through GitHub Releases
+- Tauri desktop packaging for local macOS and Windows apps
 
 ## Quick Start
 
@@ -188,6 +192,9 @@ ANTHROPIC_API_KEY=
 OPENROUTER_API_KEY=
 GEMINI_API_KEY=
 XAI_API_KEY=
+PILLAR_GOOGLE_CALENDAR_CLIENT_ID=
+# Optional for self-hosted/custom Google OAuth clients; desktop uses PKCE without a secret.
+PILLAR_GOOGLE_CALENDAR_CLIENT_SECRET=
 CUSTOM_MODEL_API_KEY=
 WHISPER_CPP_PATH=
 WHISPER_MODEL_PATH=

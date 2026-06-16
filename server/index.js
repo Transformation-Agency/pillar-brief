@@ -2,7 +2,7 @@ import express from "express";
 import fs from "node:fs";
 import path from "node:path";
 import { execFile, spawn } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { pipeline } from "node:stream/promises";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
@@ -519,6 +519,7 @@ function installFfmpegWithBrew(brewPath) {
 
 function sourceCredentialStatus(type) {
   if (["Web", "RSS", "Podcast", "Newsletter", "Reddit", "YouTube"].includes(type)) return "not required";
+  if (type === "Calendar") return "missing";
   if (["X", "TikTok"].includes(type)) return "optional";
   return "missing";
 }
@@ -650,6 +651,7 @@ function defaultSourceConfig(type) {
   if (type === "YouTube") return { mode: "channel" };
   if (type === "Podcast") return { mode: "feed" };
   if (type === "Newsletter") return { mode: "feed" };
+  if (type === "Calendar") return { mode: "google", calendarId: "selected", includeAttendees: true, includeDescriptions: false, includeDeclined: false };
   if (type === "Web") return { mode: "page" };
   return { mode: "feed" };
 }
@@ -667,7 +669,7 @@ function stripGeneratedYears(value = "") {
 }
 
 function sanitizeSourceSuggestion(item, index = 0, options = {}) {
-  const allowedTypes = new Set(["Web", "RSS", "Reddit", "X", "YouTube", "Podcast", "Newsletter", "TikTok"]);
+  const allowedTypes = new Set(["Web", "RSS", "Reddit", "X", "YouTube", "Podcast", "Newsletter", "TikTok", "Calendar"]);
   const type = allowedTypes.has(item?.type) ? item.type : "RSS";
   const rawConfig = item?.config && typeof item.config === "object" ? item.config : defaultSourceConfig(type);
   const rawXQuery = rawConfig.query || item?.locator || rawConfig.handle || "";
@@ -692,14 +694,14 @@ function sanitizeBriefSetupDraft(item = {}, current = briefConfig()) {
     { key: "whyItMatters", label: currentOwnerName && !isDefaultOwnerName(currentOwnerName) ? `Why ${currentOwnerName} Should Care` : "Why It Matters", enabled: true, instruction: "Bullets tied to decisions, risks, opportunities, or watch items." },
     { key: "sourceEvidence", label: "Source Evidence", enabled: true, instruction: "Cited items behind the brief." },
   ];
-  const sections = (Array.isArray(item.sections) ? item.sections : defaultSections).slice(0, 10).map((section, index) => ({
+  const sections = putCalendarBriefSectionFirst((Array.isArray(item.sections) ? item.sections : defaultSections).slice(0, 10).map((section, index) => ({
     key: String(section.key || `custom-${index + 1}`).trim().replace(/[^a-zA-Z0-9_-]/g, "-") || `custom-${index + 1}`,
     label: String(section.label || section.key || `Section ${index + 1}`).trim().slice(0, 80),
     enabled: section.enabled !== false,
     instruction: String(section.instruction || "Write this section in direct, useful plain English.").trim().slice(0, 600),
     promptTarget: "standard",
     promptRefId: "",
-  })).filter((section) => section.key && section.label);
+  })).filter((section) => section.key && section.label), { addIfConnected: true });
   return {
     ownerName: String(item.ownerName || current.ownerName || "You").trim().slice(0, 80) || "You",
     productName: String(item.productName || current.productName || "Pillar Brief").trim().slice(0, 80) || "Pillar Brief",
@@ -713,6 +715,73 @@ function sanitizeBriefSetupDraft(item = {}, current = briefConfig()) {
   };
 }
 
+function defaultCalendarBriefSection() {
+  return {
+    key: "calendarAgenda",
+    label: "Today's Calendar",
+    enabled: true,
+    instruction: "Use today's connected calendar events to prepare me for the day: meetings, schedule shape, likely prep needs, conflicts, sequencing, focus blocks, and follow-up reminders. Treat calendar entries as private schedule context, not news.",
+    promptTarget: "standard",
+    promptRefId: "",
+  };
+}
+
+function isGoogleCalendarConnected() {
+  try {
+    const credential = googleCalendarCredential();
+    return !!(credential.enabled && credential.data?.refreshToken);
+  } catch {
+    return false;
+  }
+}
+
+function putCalendarBriefSectionFirst(sections = [], options = {}) {
+  const usableSections = Array.isArray(sections) ? sections.filter(Boolean) : [];
+  const existing = usableSections.find((section) => section?.key === "calendarAgenda");
+  if (!existing && !(options.addIfConnected && isGoogleCalendarConnected())) return usableSections;
+  const calendarSection = existing ? { ...defaultCalendarBriefSection(), ...existing, key: "calendarAgenda" } : defaultCalendarBriefSection();
+  return [calendarSection, ...usableSections.filter((section) => section?.key !== "calendarAgenda")];
+}
+
+function ensureGoogleCalendarBriefSetup() {
+  const markerKey = "google_calendar_brief_setup_seeded";
+  const orderMarkerKey = "google_calendar_brief_section_ordered";
+  const seeded = get("SELECT value FROM app_state WHERE key=$key", { $key: markerKey })?.value === "1";
+  const ordered = get("SELECT value FROM app_state WHERE key=$key", { $key: orderMarkerKey })?.value === "1";
+  const t = now();
+  const existingSource = get("SELECT id FROM sources WHERE type='Calendar' AND locator='selected'");
+  if (!existingSource) {
+    const sourceId = id("src");
+    const config = defaultSourceConfig("Calendar");
+    run(`INSERT INTO sources (id, name, type, locator, cadence, status, approval_status, credentials_status, note, config_json, created_at, updated_at)
+         VALUES ($id, 'Google Calendar', 'Calendar', 'selected', 'Daily', 'active', 'approved', 'configured', 'Auto-added when Google Calendar was connected.', $config, $t, $t)`, {
+      $id: sourceId,
+      $config: json(config),
+      $t: t,
+    });
+    audit("source.created", "source", sourceId, "Google Calendar source auto-added after Calendar connection", {}, "system");
+  }
+  const row = get("SELECT section_schema_json FROM brief_config WHERE id=1");
+  const sections = parse(row?.section_schema_json, []);
+  if (Array.isArray(sections) && !sections.some((section) => section.key === "calendarAgenda") && !seeded) {
+    run("UPDATE brief_config SET section_schema_json=$sections, updated_at=$t WHERE id=1", {
+      $sections: json(putCalendarBriefSectionFirst(sections, { addIfConnected: true })),
+      $t: t,
+    });
+    audit("brief_config.calendar_section_added", "brief_config", "1", "Added editable Today's Calendar section after Google Calendar connection", {}, "system");
+  } else if (Array.isArray(sections) && sections.some((section) => section.key === "calendarAgenda") && !ordered) {
+    run("UPDATE brief_config SET section_schema_json=$sections, updated_at=$t WHERE id=1", {
+      $sections: json(putCalendarBriefSectionFirst(sections)),
+      $t: t,
+    });
+    audit("brief_config.calendar_section_ordered", "brief_config", "1", "Moved Today's Calendar section to the top of Brief Setup", {}, "system");
+  }
+  run(`INSERT INTO app_state (key, value, updated_at) VALUES ($key, '1', $t)
+       ON CONFLICT(key) DO UPDATE SET value='1', updated_at=$t`, { $key: markerKey, $t: t });
+  run(`INSERT INTO app_state (key, value, updated_at) VALUES ($key, '1', $t)
+       ON CONFLICT(key) DO UPDATE SET value='1', updated_at=$t`, { $key: orderMarkerKey, $t: t });
+}
+
 function isDefaultOwnerName(name) {
   const normalized = String(name || "").trim().toLowerCase();
   return !normalized || ["you", "brief owner", "the brief owner"].includes(normalized);
@@ -720,6 +789,16 @@ function isDefaultOwnerName(name) {
 
 function sanitizeSourceConfig(type, config = {}, locator = "", options = {}) {
   const base = config && typeof config === "object" ? config : {};
+  if (type === "Calendar") {
+    return {
+      mode: "google",
+      calendarId: String(base.calendarId || locator || "selected").trim() || "selected",
+      calendarIds: Array.isArray(base.calendarIds) ? base.calendarIds.map((item) => String(item || "").trim()).filter(Boolean) : [],
+      includeDescriptions: base.includeDescriptions === true,
+      includeAttendees: base.includeAttendees !== false,
+      includeDeclined: base.includeDeclined === true,
+    };
+  }
   if (type === "X") {
     const rawQuery = String(base.query || locator || base.handle || "").trim();
     return {
@@ -1867,9 +1946,259 @@ async function fetchWebSource(source) {
   return { ok: true, skipped: false, seen: 1, inserted };
 }
 
+function eventDateTimeValue(value = {}) {
+  return value.dateTime || value.date || "";
+}
+
+function eventDisplayTime(event = {}) {
+  const start = eventDateTimeValue(event.start);
+  const end = eventDateTimeValue(event.end);
+  const opts = { hour: "numeric", minute: "2-digit" };
+  if (!start) return "All day";
+  if (event.start?.date && !event.start?.dateTime) return "All day";
+  const startText = new Date(start).toLocaleTimeString([], opts);
+  const endText = end ? new Date(end).toLocaleTimeString([], opts) : "";
+  return endText ? `${startText}-${endText}` : startText;
+}
+
+function formatCalendarEventBody(event = {}, source = {}, config = {}) {
+  const parts = [
+    `Time: ${eventDisplayTime(event)}`,
+    event.location ? `Location: ${event.location}` : "",
+  ];
+  if (config.includeAttendees !== false && Array.isArray(event.attendees) && event.attendees.length) {
+    const attendees = event.attendees
+      .filter((attendee) => attendee.email || attendee.displayName)
+      .slice(0, 12)
+      .map((attendee) => attendee.displayName || attendee.email)
+      .join(", ");
+    if (attendees) parts.push(`Attendees: ${attendees}`);
+  }
+  if (config.includeDescriptions && event.description) parts.push(`Description: ${stripHtml(event.description).slice(0, 1000)}`);
+  return parts.filter(Boolean).join("\n");
+}
+
+function calendarAgendaFromEvents(events = [], source = {}, config = {}) {
+  return events.map((event) => ({
+    id: event.id,
+    title: event.summary || "Untitled event",
+    calendar: source.name,
+    calendarId: config.calendarId || "primary",
+    start: eventDateTimeValue(event.start),
+    end: eventDateTimeValue(event.end),
+    time: eventDisplayTime(event),
+    location: event.location || "",
+    attendees: config.includeAttendees === false ? [] : (event.attendees || []).slice(0, 12).map((attendee) => attendee.displayName || attendee.email).filter(Boolean),
+    description: config.includeDescriptions ? stripHtml(event.description || "").slice(0, 1000) : "",
+    htmlLink: event.htmlLink || "",
+  }));
+}
+
+async function fetchGoogleCalendarEventsForCalendar({ source, calendarId, accessToken, config }) {
+  const params = new URLSearchParams({
+    timeMin: startOfLocalDay().toISOString(),
+    timeMax: endOfLocalDay().toISOString(),
+    singleEvents: "true",
+    orderBy: "startTime",
+    showDeleted: "false",
+    maxResults: String(Math.max(1, Math.min(50, Number(config.maxResults || 20)))),
+    timeZone: briefConfig().deliveryTimezone || "UTC",
+  });
+  const url = `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(calendarId)}/events?${params}`;
+  const response = await fetchWithTimeout(url, { headers: { Authorization: `Bearer ${accessToken}` } });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(payload.error?.message || `Google Calendar fetch failed: ${response.status} ${response.statusText}`);
+  return Array.isArray(payload.items) ? payload.items : [];
+}
+
+async function fetchGoogleCalendarSource(source) {
+  const config = source.config || {};
+  const credential = googleCalendarCredential();
+  const selectedCalendarIds = Array.isArray(credential.data.selectedCalendarIds) && credential.data.selectedCalendarIds.length ? credential.data.selectedCalendarIds : ["primary"];
+  const calendarIds = Array.isArray(config.calendarIds) && config.calendarIds.length
+    ? config.calendarIds
+    : config.calendarId && config.calendarId !== "selected"
+      ? [config.calendarId]
+      : selectedCalendarIds;
+  const accessToken = await refreshGoogleCalendarAccessToken();
+  const rawEventsByCalendar = [];
+  for (const calendarId of calendarIds) {
+    const events = await fetchGoogleCalendarEventsForCalendar({ source, calendarId, accessToken, config });
+    rawEventsByCalendar.push(...events.map((event) => ({ ...event, pillarCalendarId: calendarId })));
+  }
+  const rawEvents = rawEventsByCalendar.sort((a, b) => String(eventDateTimeValue(a.start)).localeCompare(String(eventDateTimeValue(b.start))));
+  const events = rawEvents.filter((event) => {
+    if (event.status === "cancelled") return false;
+    if (config.includeDeclined) return true;
+    const selfAttendee = (event.attendees || []).find((attendee) => attendee.self);
+    return selfAttendee?.responseStatus !== "declined";
+  });
+  let inserted = 0;
+  for (const event of events) {
+    const start = eventDateTimeValue(event.start);
+    const saved = saveNormalizedItem({
+      source,
+      stableId: event.id ? `${event.pillarCalendarId || "calendar"}:${event.id}` : event.htmlLink || `${event.pillarCalendarId || "calendar"}:${event.summary}:${start}`,
+      canonicalUrl: event.htmlLink || "",
+      title: `Calendar: ${event.summary || "Untitled event"}`,
+      body: formatCalendarEventBody(event, source, config),
+      publishedAt: start ? new Date(start).toISOString() : startOfLocalDay().toISOString(),
+      relevanceScore: 0.72,
+      risingScore: 0.2,
+    });
+    if (saved.inserted) inserted += 1;
+  }
+  const agenda = calendarAgendaFromEvents(events, source, config);
+  const fetchedAt = now();
+  const nextConfig = { ...config, calendarId: config.calendarId || "selected", calendarIds, lastFetchedAt: fetchedAt, lastFetchedCount: rawEvents.length, lastFetchedTodayCount: events.length, lastInsertedCount: inserted, lastAgenda: agenda };
+  run("UPDATE sources SET config_json=$config, updated_at=$t WHERE id=$id", { $id: source.id, $config: json(nextConfig), $t: fetchedAt });
+  audit("calendar.fetched", "source", source.id, `Fetched ${events.length} Google Calendar event${events.length === 1 ? "" : "s"} for today`, { fetched: rawEvents.length, today: events.length, inserted, calendarIds }, "system");
+  return { ok: true, skipped: false, seen: rawEvents.length, today: events.length, inserted, calendarIds, agenda };
+}
+
 function xBearerToken() {
   const row = get("SELECT * FROM connector_credentials WHERE provider='x'");
   return row?.enabled && row.api_key ? row.api_key : "";
+}
+
+const GOOGLE_CALENDAR_PROVIDER = "google_calendar";
+const GOOGLE_CALENDAR_DESKTOP_CLIENT_ID = process.env.PILLAR_GOOGLE_CALENDAR_CLIENT_ID || "190790037747-8mou84ivna7taems83u92t7fpfsd12m3.apps.googleusercontent.com";
+// Optional for self-hosted/custom confidential OAuth clients. The packaged
+// desktop app uses Google's installed-app PKCE flow and does not need a secret.
+const GOOGLE_CALENDAR_CLIENT_SECRET = process.env.PILLAR_GOOGLE_CALENDAR_CLIENT_SECRET || "";
+const GOOGLE_CALENDAR_SCOPES = [
+  "https://www.googleapis.com/auth/calendar.events.readonly",
+  "https://www.googleapis.com/auth/calendar.calendarlist.readonly",
+];
+const GOOGLE_CALENDAR_SCOPE = GOOGLE_CALENDAR_SCOPES.join(" ");
+
+function googleCalendarCredential() {
+  const row = get("SELECT * FROM connector_credentials WHERE provider=$provider", { $provider: GOOGLE_CALENDAR_PROVIDER });
+  const data = parse(row?.api_key, {});
+  return {
+    row,
+    data: data && typeof data === "object" ? data : {},
+    enabled: !!row?.enabled,
+  };
+}
+
+function googleCalendarRedirectUri(req) {
+  return `${req.protocol}://${req.get("host")}/api/google-calendar/oauth/callback`;
+}
+
+function base64Url(buffer) {
+  return Buffer.from(buffer).toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+}
+
+function googleCalendarPkcePair() {
+  const verifier = base64Url(randomBytes(64));
+  const challenge = base64Url(createHash("sha256").update(verifier).digest());
+  return { verifier, challenge };
+}
+
+function googleCalendarPublicConnector(connector = googleCalendarCredential()) {
+  const { row, data, enabled } = connector;
+  const hasClient = !!(data.clientId || GOOGLE_CALENDAR_DESKTOP_CLIENT_ID);
+  const hasRefreshToken = !!data.refreshToken;
+  return {
+    provider: "googleCalendar",
+    enabled,
+    apiKeySaved: hasRefreshToken,
+    clientConfigured: hasClient,
+    credentialStatus: hasRefreshToken ? "saved" : hasClient ? "client configured" : "missing",
+    status: enabled && hasRefreshToken ? "ready" : hasClient ? "needs consent" : "pending credentials",
+    calendarId: data.calendarId || "primary",
+    selectedCalendarIds: Array.isArray(data.selectedCalendarIds) && data.selectedCalendarIds.length ? data.selectedCalendarIds : ["primary"],
+    calendars: Array.isArray(data.calendars) ? data.calendars : [],
+    scope: data.scope || GOOGLE_CALENDAR_SCOPE,
+    redirectUri: data.redirectUri || "",
+    lastCheckedAt: row?.last_checked_at || null,
+    lastError: row?.last_error || null,
+    updatedAt: row?.updated_at || null,
+  };
+}
+
+function saveGoogleCalendarCredential(data, { enabled = false, lastError = "" } = {}) {
+  run(`INSERT INTO connector_credentials (provider, api_key, enabled, last_error, updated_at)
+       VALUES ($provider, $apiKey, $enabled, $err, $t)
+       ON CONFLICT(provider) DO UPDATE SET api_key=$apiKey, enabled=$enabled, last_error=$err, updated_at=$t`, {
+    $provider: GOOGLE_CALENDAR_PROVIDER,
+    $apiKey: json(data),
+    $enabled: enabled ? 1 : 0,
+    $err: lastError,
+    $t: now(),
+  });
+}
+
+async function exchangeGoogleCalendarCode({ clientId, clientSecret, code, redirectUri, codeVerifier }) {
+  const body = new URLSearchParams({
+    client_id: clientId,
+    code,
+    grant_type: "authorization_code",
+    redirect_uri: redirectUri,
+  });
+  if (clientSecret) body.set("client_secret", clientSecret);
+  if (codeVerifier) body.set("code_verifier", codeVerifier);
+  const response = await fetchWithTimeout("https://oauth2.googleapis.com/token", {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    body,
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(payload.error_description || payload.error || `Google OAuth token exchange failed: ${response.status} ${response.statusText}`);
+  return payload;
+}
+
+async function refreshGoogleCalendarAccessToken() {
+  const connector = googleCalendarCredential();
+  const { data, enabled } = connector;
+  if (!enabled || !data.refreshToken || !(data.clientId || GOOGLE_CALENDAR_DESKTOP_CLIENT_ID)) throw new Error("Google Calendar is not connected.");
+  if (data.accessToken && data.expiresAt && Number(data.expiresAt) > Date.now() + 60000) return data.accessToken;
+  const body = new URLSearchParams({
+    client_id: data.clientId || GOOGLE_CALENDAR_DESKTOP_CLIENT_ID,
+    refresh_token: data.refreshToken,
+    grant_type: "refresh_token",
+  });
+  const clientSecret = String(data.clientSecret || GOOGLE_CALENDAR_CLIENT_SECRET || "").trim();
+  if (clientSecret) body.set("client_secret", clientSecret);
+  const response = await fetchWithTimeout("https://oauth2.googleapis.com/token", {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    body,
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const error = payload.error_description || payload.error || `Google token refresh failed: ${response.status} ${response.statusText}`;
+    run("UPDATE connector_credentials SET last_checked_at=$t, last_error=$err, updated_at=$t WHERE provider=$provider", { $provider: GOOGLE_CALENDAR_PROVIDER, $t: now(), $err: error });
+    throw new Error(error);
+  }
+  const nextData = {
+    ...data,
+    accessToken: payload.access_token,
+    expiresAt: Date.now() + Number(payload.expires_in || 3600) * 1000,
+    tokenType: payload.token_type || data.tokenType || "Bearer",
+  };
+  saveGoogleCalendarCredential(nextData, { enabled: true });
+  run("UPDATE connector_credentials SET last_checked_at=$t, last_error='', updated_at=$t WHERE provider=$provider", { $provider: GOOGLE_CALENDAR_PROVIDER, $t: now() });
+  return nextData.accessToken;
+}
+
+async function fetchGoogleCalendarList() {
+  const accessToken = await refreshGoogleCalendarAccessToken();
+  const response = await fetchWithTimeout("https://www.googleapis.com/calendar/v3/users/me/calendarList?minAccessRole=reader", {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(payload.error?.message || `Google Calendar list failed: ${response.status} ${response.statusText}`);
+  return (Array.isArray(payload.items) ? payload.items : []).map((calendar) => ({
+    id: calendar.id,
+    summary: calendar.summary || calendar.id,
+    description: calendar.description || "",
+    primary: !!calendar.primary,
+    accessRole: calendar.accessRole || "",
+    backgroundColor: calendar.backgroundColor || "",
+    selected: calendar.selected !== false,
+  })).filter((calendar) => calendar.id);
 }
 
 function xHeaders(token) {
@@ -1988,10 +2317,11 @@ async function fetchSourceCollection({ useRecentCache = false, onProgress } = {}
   const rssSources = activeSources.filter((s) => s.type === "RSS");
   const redditSources = activeSources.filter((s) => s.type === "Reddit");
   const webSources = activeSources.filter((s) => s.type === "Web");
+  const calendarSources = activeSources.filter((s) => s.type === "Calendar");
   const transcriptionSources = podcastSources.filter((s) => s.config?.transcribeNewEpisodes !== false);
   const transcriptionResults = [];
   let checkedSources = 0;
-  const totalFetchSources = transcriptionSources.length + xSources.length + rssSources.length + redditSources.length + webSources.length;
+  const totalFetchSources = transcriptionSources.length + xSources.length + rssSources.length + redditSources.length + webSources.length + calendarSources.length;
   const reportFetchProgress = (label) => {
     checkedSources += 1;
     onProgress?.({
@@ -2059,11 +2389,24 @@ async function fetchSourceCollection({ useRecentCache = false, onProgress } = {}
       reportFetchProgress(`Web: ${source.name}`);
     }
   }
+  const calendarResults = [];
+  for (const source of calendarSources) {
+    try {
+      const cached = useRecentCache ? recentSourceCache(source) : null;
+      calendarResults.push(cached ? { sourceId: source.id, sourceName: source.name, agenda: source.config?.lastAgenda || [], ...cached } : { sourceId: source.id, sourceName: source.name, ...(await fetchGoogleCalendarSource(source)) });
+    } catch (error) {
+      calendarResults.push({ sourceId: source.id, sourceName: source.name, ok: false, error: error.message || "Google Calendar fetch failed", agenda: [] });
+      audit("calendar.fetch_failed", "source", source.id, error.message || "Google Calendar fetch failed", {}, "system");
+    } finally {
+      reportFetchProgress(`Calendar: ${source.name}`);
+    }
+  }
   const itemCount = transcriptionResults.filter((result) => result.transcribed).length
     + xResults.reduce((sum, result) => sum + Number(result.inserted || 0) + Number(result.preflightInserted || 0), 0)
     + rssResults.reduce((sum, result) => sum + Number(result.inserted || 0) + Number(result.preflightInserted || 0), 0)
     + redditResults.reduce((sum, result) => sum + Number(result.inserted || 0) + Number(result.preflightInserted || 0), 0)
-    + webResults.reduce((sum, result) => sum + Number(result.inserted || 0) + Number(result.preflightInserted || 0), 0);
+    + webResults.reduce((sum, result) => sum + Number(result.inserted || 0) + Number(result.preflightInserted || 0), 0)
+    + calendarResults.reduce((sum, result) => sum + Number(result.inserted || 0) + Number(result.preflightInserted || 0), 0);
   return {
     activeSources,
     podcastSources,
@@ -2071,14 +2414,16 @@ async function fetchSourceCollection({ useRecentCache = false, onProgress } = {}
     rssSources,
     redditSources,
     webSources,
+    calendarSources,
     transcriptionSources,
     transcriptionResults,
     xResults,
     rssResults,
     redditResults,
     webResults,
+    calendarResults,
     itemCount,
-    sourceResults: { xFetches: xResults, rssFetches: rssResults, redditFetches: redditResults, webFetches: webResults, podcastTranscriptions: transcriptionResults },
+    sourceResults: { xFetches: xResults, rssFetches: rssResults, redditFetches: redditResults, webFetches: webResults, calendarFetches: calendarResults, calendarAgenda: calendarResults.flatMap((result) => result.agenda || []), podcastTranscriptions: transcriptionResults },
   };
 }
 
@@ -2274,6 +2619,9 @@ function seed() {
   if (!get("SELECT provider FROM connector_credentials WHERE provider = 'elevenlabs'")) {
     run("INSERT INTO connector_credentials (provider, updated_at) VALUES ('elevenlabs', $t)", { $t: t });
   }
+  if (!get("SELECT provider FROM connector_credentials WHERE provider = $provider", { $provider: GOOGLE_CALENDAR_PROVIDER })) {
+    run("INSERT INTO connector_credentials (provider, updated_at) VALUES ($provider, $t)", { $provider: GOOGLE_CALENDAR_PROVIDER, $t: t });
+  }
   const currentModel = get("SELECT * FROM model_settings WHERE id = 1");
   const modelProviderRow = currentModel?.provider
     ? get("SELECT api_key FROM connector_credentials WHERE provider=$provider", { $provider: modelProviderCredentialKey(currentModel.provider) })
@@ -2329,6 +2677,11 @@ function seed() {
   }
   if (!get("SELECT id FROM onboarding_state WHERE id = 1")) {
     run("INSERT INTO onboarding_state (id, updated_at) VALUES (1, $t)", { $t: t });
+  }
+  const googleCalendarRow = get("SELECT enabled, api_key FROM connector_credentials WHERE provider=$provider", { $provider: GOOGLE_CALENDAR_PROVIDER });
+  const googleCalendarData = parse(googleCalendarRow?.api_key, {});
+  if (googleCalendarRow?.enabled && googleCalendarData?.refreshToken) {
+    ensureGoogleCalendarBriefSetup();
   }
 }
 
@@ -2416,6 +2769,7 @@ function modelSettings() {
 function connectorSettings() {
   const rows = all("SELECT * FROM connector_credentials ORDER BY provider");
   const connectors = Object.fromEntries(rows.map((r) => {
+    if (r.provider === GOOGLE_CALENDAR_PROVIDER) return [r.provider, googleCalendarPublicConnector({ row: r, data: parse(r.api_key, {}), enabled: !!r.enabled })];
     const hasKey = !!r.api_key;
     return [r.provider, {
       provider: r.provider,
@@ -2449,6 +2803,7 @@ function connectorSettings() {
       lastError: null,
       updatedAt: null,
     },
+    googleCalendar: connectors[GOOGLE_CALENDAR_PROVIDER] || googleCalendarPublicConnector({ row: null, data: {}, enabled: false }),
   };
 }
 function onboardingState() {
@@ -2787,7 +3142,8 @@ function validateStrategicBrief(brief) {
 async function synthesizeStrategicBrief({ selectedIssues, sourceResults }) {
   const config = briefConfig();
   const owner = config.ownerName || "the brief owner";
-  if (!selectedIssues.length) throw new Error("No usable source items from today were selected. Add or fix sources, then generate again.");
+  const calendarAgenda = Array.isArray(sourceResults?.calendarAgenda) ? sourceResults.calendarAgenda : [];
+  if (!selectedIssues.length && !calendarAgenda.length) throw new Error("No usable source items or calendar events from today were selected. Add or fix sources, then generate again.");
   const enabledAnalyzers = sanitizeAnalyzerList(config.analyzers, defaultAnalyzers()).filter((analyzer) => analyzer.enabled !== false);
   const enabledSections = (config.sections || []).filter((section) => section.enabled !== false).map((section) => {
     return {
@@ -2801,6 +3157,7 @@ async function synthesizeStrategicBrief({ selectedIssues, sourceResults }) {
     "Make it useful, readable, and direct. It should feel like a smart person wrote it for another smart person over coffee.",
     "Use the source items for claims about what happened. Use common knowledge only to explain context or jargon.",
     "Only use selected source items that were published today for the brief's news/signals. Do not include older posts just because they were discovered or cached today.",
+    "Calendar agenda entries are private schedule context, not news. Use them only for agenda, prep, conflicts, sequencing, and focus recommendations.",
     "Do not invent quotes, source details, outcomes, companies, people, or numbers.",
     `Audience context: ${config.audienceContext || `${owner} is smart but may not know every term.`}`,
     `Voice rules: ${config.voiceRules || "Clear, concise, plain-English, with a little personality. Avoid corporate language."}`,
@@ -2823,7 +3180,7 @@ async function synthesizeStrategicBrief({ selectedIssues, sourceResults }) {
       titleSummary: "8-16 words for the saved title after the date; concrete main points only, no date",
       sectionResponses: Object.fromEntries(enabledSections
         .filter((section) => section.key !== "sourceEvidence")
-        .map((section) => [section.key, `${section.label}: answer this section using its instruction and today's selected source items`])),
+        .map((section) => [section.key, `${section.label}: answer this section using its instruction, today's selected source items, and calendarAgenda when relevant`])),
       executiveRead: "2-3 readable paragraphs that explain what matters",
       backgroundContext: ["helpful context or definitions only if needed"],
       whyJackShouldCare: ["sharp bullets on why this is worth attention"],
@@ -2849,6 +3206,7 @@ async function synthesizeStrategicBrief({ selectedIssues, sourceResults }) {
       analyzerBehavior: config.analyzerBehavior || defaultAnalyzerBehavior,
     },
     selectedIssues,
+    calendarAgenda,
     sourceFreshnessPolicy: "Selected source items have publishedAt dates from today only. If no selectedIssues are present, say there were no usable items published today.",
     sourceResults,
   });
@@ -3197,6 +3555,7 @@ async function executeWorkflow(trigger = "Manual", options = {}) {
       rssResults,
       redditResults,
       webResults,
+      calendarResults,
       itemCount,
       sourceResults,
     } = await fetchSourceCollection({
@@ -3238,6 +3597,8 @@ async function executeWorkflow(trigger = "Manual", options = {}) {
     rssFetches: rssResults,
     redditFetches: redditResults,
     webFetches: webResults,
+    calendarFetches: calendarResults,
+    calendarAgenda: sourceResults.calendarAgenda || [],
     strategicBrief,
     whyJackShouldCare: Array.isArray(strategicBrief.whyJackShouldCare) ? strategicBrief.whyJackShouldCare.join("\n") : strategicBrief.whyJackShouldCare || "",
     implications: strategicBrief.futureImplications || [],
@@ -3301,6 +3662,7 @@ async function executeWorkflow(trigger = "Manual", options = {}) {
       if (rssResults.length) output += ` · RSS ${rssResults.reduce((sum, result) => sum + Number(result.seen || 0), 0)} fetched, ${rssResults.reduce((sum, result) => sum + Number(result.inserted || 0), 0)} new`;
       if (redditResults.length) output += ` · Reddit ${redditResults.reduce((sum, result) => sum + Number(result.seen || 0), 0)} fetched, ${redditResults.reduce((sum, result) => sum + Number(result.inserted || 0), 0)} new`;
       if (webResults.length) output += ` · Web ${webResults.reduce((sum, result) => sum + Number(result.seen || 0), 0)} checked, ${webResults.reduce((sum, result) => sum + Number(result.inserted || 0), 0)} new`;
+      if (calendarResults.length) output += ` · Calendar ${calendarResults.reduce((sum, result) => sum + Number(result.today || result.seen || 0), 0)} events`;
     }
     if (key === "normalize") output = `${itemCount} normalized item${itemCount === 1 ? "" : "s"}`;
     if (key === "score") output = `${itemCount} scored item${itemCount === 1 ? "" : "s"}`;
@@ -3573,7 +3935,7 @@ app.post("/api/onboarding/source-suggestions", async (req, res) => {
     "Use only these source types: RSS, Web, Reddit, X, YouTube, Podcast, Newsletter.",
     "Prefer public RSS/Web/Reddit/YouTube/Podcast sources when possible. Use X only for handles or search queries that clearly need it.",
     "Return JSON with a top-level sources array. Each source must include: name, type, locator, cadence, config, rationale, confidence.",
-    "Config examples: RSS {mode:'feed', feedUrl:'https://...'}, Web {mode:'page', url:'https://...'}, Reddit {mode:'subreddit', subreddits:'name'}, X {mode:'search', query:'...'}, YouTube {mode:'channel', channel:'@handle'}, Podcast {mode:'feed', feedUrl:'https://...'}, Newsletter {mode:'feed', feedUrl:'https://...'}",
+    "Config examples: RSS {mode:'feed', feedUrl:'https://...'}, Web {mode:'page', url:'https://...'}, Reddit {mode:'subreddit', subreddits:'name'}, X {mode:'search', query:'...'}, YouTube {mode:'channel', channel:'@handle'}, Podcast {mode:'feed', feedUrl:'https://...'}, Newsletter {mode:'feed', feedUrl:'https://...'}, Calendar {mode:'google', calendarId:'primary'}",
     "For X search queries, do not include years unless the user explicitly asked for a specific year/date range. For latest/current/today briefs, use timeless topic queries; the app handles recency.",
     "Bad X query unless the user asked for that year: \"AI crypto politics 2024\". Better: \"AI crypto politics lang:en\".",
     "",
@@ -4127,6 +4489,149 @@ app.post("/api/model/models", async (req, res) => {
   const result = await fetchProviderModels({ provider, apiKey: b.apiKey || "", savedApiKey: savedModelProviderKey(provider, current), baseUrl: b.baseUrl || "" });
   run("UPDATE model_settings SET last_checked_at=$t, last_error=$err WHERE id=1", { $t: now(), $err: result.error || "" });
   res.json({ ...result, state: state() });
+});
+
+app.post("/api/google-calendar/oauth/start", (req, res) => {
+  const b = req.body || {};
+  const clientId = String(b.clientId || GOOGLE_CALENDAR_DESKTOP_CLIENT_ID).trim();
+  const clientSecret = String(b.clientSecret || GOOGLE_CALENDAR_CLIENT_SECRET || "").trim();
+  if (!clientId) return res.status(400).json({ error: "Google Calendar OAuth client ID is not configured.", state: state() });
+  const redirectUri = googleCalendarRedirectUri(req);
+  const stateToken = id("gcal");
+  const pkce = googleCalendarPkcePair();
+  const data = {
+    ...googleCalendarCredential().data,
+    clientId,
+    clientSecret: clientSecret || "",
+    redirectUri,
+    oauthState: stateToken,
+    codeVerifier: pkce.verifier,
+    scope: GOOGLE_CALENDAR_SCOPE,
+    calendarId: "selected",
+    selectedCalendarIds: googleCalendarCredential().data.selectedCalendarIds || ["primary"],
+  };
+  saveGoogleCalendarCredential(data, { enabled: !!data.refreshToken });
+  const authUrl = `https://accounts.google.com/o/oauth2/v2/auth?${new URLSearchParams({
+    client_id: clientId,
+    redirect_uri: redirectUri,
+    response_type: "code",
+    scope: GOOGLE_CALENDAR_SCOPE,
+    access_type: "offline",
+    prompt: "consent",
+    state: stateToken,
+    code_challenge: pkce.challenge,
+    code_challenge_method: "S256",
+  })}`;
+  audit("google_calendar.oauth_started", "connector", GOOGLE_CALENDAR_PROVIDER, "Started Google Calendar OAuth consent", { redirectUri }, "system");
+  res.json({ authUrl, redirectUri, state: state() });
+});
+
+app.get("/api/google-calendar/oauth/callback", async (req, res) => {
+  const code = String(req.query.code || "");
+  const returnedState = String(req.query.state || "");
+  const connector = googleCalendarCredential();
+  const data = connector.data;
+  const render = (title, body, { autoReturn = false } = {}) => res.type("html").send(`<!doctype html><html><head><meta charset="utf-8"><title>${title}</title>${autoReturn ? '<meta http-equiv="refresh" content="1.4; url=/#/settings">' : ''}<style>body{font-family:-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;margin:48px;line-height:1.5;color:#111827}main{max-width:640px}.button{display:inline-flex;align-items:center;justify-content:center;margin-top:20px;border-radius:8px;background:#111827;color:#fff;text-decoration:none;font-weight:800;padding:12px 16px}p{font-size:18px;color:#374151}code{background:#f3f4f6;padding:2px 6px;border-radius:6px}</style></head><body><main><h1>${title}</h1><p>${body}</p><p>${autoReturn ? "Returning to Pillar Brief Settings..." : "Use the button below to return to Pillar Brief."}</p><a class="button" href="/#/settings">Return to Pillar Brief</a></main><script>${autoReturn ? 'setTimeout(() => { window.location.href = "/#/settings"; }, 800);' : ''}</script></body></html>`);
+  if (!code) {
+    const error = String(req.query.error || "Missing OAuth code");
+    run("UPDATE connector_credentials SET last_error=$err, updated_at=$t WHERE provider=$provider", { $provider: GOOGLE_CALENDAR_PROVIDER, $err: error, $t: now() });
+    return render("Google Calendar was not connected", error);
+  }
+  if (!data.oauthState || returnedState !== data.oauthState) {
+    run("UPDATE connector_credentials SET last_error=$err, updated_at=$t WHERE provider=$provider", { $provider: GOOGLE_CALENDAR_PROVIDER, $err: "OAuth state did not match.", $t: now() });
+    return render("Google Calendar was not connected", "The OAuth state did not match. Start the connection again from Pillar Brief.");
+  }
+  try {
+    const token = await exchangeGoogleCalendarCode({
+      clientId: data.clientId,
+      clientSecret: String(data.clientSecret || GOOGLE_CALENDAR_CLIENT_SECRET || "").trim(),
+      code,
+      redirectUri: data.redirectUri,
+      codeVerifier: data.codeVerifier,
+    });
+    const nextData = {
+      ...data,
+      refreshToken: token.refresh_token || data.refreshToken || "",
+      accessToken: token.access_token || "",
+      expiresAt: Date.now() + Number(token.expires_in || 3600) * 1000,
+      tokenType: token.token_type || "Bearer",
+      oauthState: "",
+      codeVerifier: "",
+    };
+    if (!nextData.refreshToken) throw new Error("Google did not return a refresh token. Try connecting again and approve offline access.");
+    saveGoogleCalendarCredential(nextData, { enabled: true });
+    ensureGoogleCalendarBriefSetup();
+    run("UPDATE connector_credentials SET last_checked_at=$t, last_error='', updated_at=$t WHERE provider=$provider", { $provider: GOOGLE_CALENDAR_PROVIDER, $t: now() });
+    audit("google_calendar.connected", "connector", GOOGLE_CALENDAR_PROVIDER, "Google Calendar connected", {}, "system");
+    try {
+      const calendars = await fetchGoogleCalendarList();
+      const selectedCalendarIds = calendars.filter((calendar) => calendar.primary || calendar.selected).map((calendar) => calendar.id);
+      const withCalendars = { ...nextData, calendars, selectedCalendarIds: selectedCalendarIds.length ? selectedCalendarIds : ["primary"], calendarId: "selected" };
+      saveGoogleCalendarCredential(withCalendars, { enabled: true });
+    } catch {
+      // Keep the connection valid even if calendar-list discovery needs a retry from the app.
+    }
+    return render("Google Calendar connected", "Pillar Brief can now read today's events. Return to the app to choose calendars.", { autoReturn: true });
+  } catch (error) {
+    const message = error.message || "Google Calendar OAuth failed";
+    run("UPDATE connector_credentials SET last_error=$err, updated_at=$t WHERE provider=$provider", { $provider: GOOGLE_CALENDAR_PROVIDER, $err: message, $t: now() });
+    audit("google_calendar.oauth_failed", "connector", GOOGLE_CALENDAR_PROVIDER, message, {}, "system");
+    return render("Google Calendar was not connected", message);
+  }
+});
+
+app.post("/api/google-calendar/test", async (req, res) => {
+  try {
+    await refreshGoogleCalendarAccessToken();
+    ensureGoogleCalendarBriefSetup();
+    run("UPDATE connector_credentials SET last_checked_at=$t, last_error='', updated_at=$t WHERE provider=$provider", { $provider: GOOGLE_CALENDAR_PROVIDER, $t: now() });
+    res.json({ ok: true, connector: googleCalendarPublicConnector(), state: state() });
+  } catch (error) {
+    run("UPDATE connector_credentials SET last_checked_at=$t, last_error=$err, updated_at=$t WHERE provider=$provider", { $provider: GOOGLE_CALENDAR_PROVIDER, $t: now(), $err: error.message || "Google Calendar test failed" });
+    res.status(400).json({ error: error.message || "Google Calendar test failed", state: state() });
+  }
+});
+
+app.post("/api/google-calendar/calendars", async (req, res) => {
+  try {
+    const calendars = await fetchGoogleCalendarList();
+    const credential = googleCalendarCredential();
+    const currentSelected = Array.isArray(credential.data.selectedCalendarIds) && credential.data.selectedCalendarIds.length
+      ? credential.data.selectedCalendarIds
+      : calendars.filter((calendar) => calendar.primary || calendar.selected).map((calendar) => calendar.id);
+    const nextData = {
+      ...credential.data,
+      calendars,
+      selectedCalendarIds: currentSelected.length ? currentSelected : ["primary"],
+      calendarId: "selected",
+    };
+    saveGoogleCalendarCredential(nextData, { enabled: true });
+    ensureGoogleCalendarBriefSetup();
+    run("UPDATE connector_credentials SET last_checked_at=$t, last_error='', updated_at=$t WHERE provider=$provider", { $provider: GOOGLE_CALENDAR_PROVIDER, $t: now() });
+    res.json({ calendars, selectedCalendarIds: nextData.selectedCalendarIds, state: state() });
+  } catch (error) {
+    run("UPDATE connector_credentials SET last_checked_at=$t, last_error=$err, updated_at=$t WHERE provider=$provider", { $provider: GOOGLE_CALENDAR_PROVIDER, $t: now(), $err: error.message || "Google Calendar list failed" });
+    res.status(400).json({ error: error.message || "Google Calendar list failed", state: state() });
+  }
+});
+
+app.patch("/api/google-calendar/calendars", (req, res) => {
+  const credential = googleCalendarCredential();
+  if (!credential.enabled || !credential.data.refreshToken) return res.status(400).json({ error: "Connect Google Calendar before choosing calendars.", state: state() });
+  const selectedCalendarIds = Array.from(new Set((Array.isArray(req.body?.selectedCalendarIds) ? req.body.selectedCalendarIds : [])
+    .map((item) => String(item || "").trim())
+    .filter(Boolean)));
+  if (!selectedCalendarIds.length) return res.status(400).json({ error: "Choose at least one calendar.", state: state() });
+  const nextData = { ...credential.data, selectedCalendarIds, calendarId: "selected" };
+  saveGoogleCalendarCredential(nextData, { enabled: true });
+  audit("google_calendar.calendars_updated", "connector", GOOGLE_CALENDAR_PROVIDER, `Selected ${selectedCalendarIds.length} calendar${selectedCalendarIds.length === 1 ? "" : "s"}`, {}, "system");
+  res.json(state());
+});
+
+app.post("/api/google-calendar/disconnect", (req, res) => {
+  run("UPDATE connector_credentials SET api_key='', enabled=0, last_error='', updated_at=$t WHERE provider=$provider", { $provider: GOOGLE_CALENDAR_PROVIDER, $t: now() });
+  audit("google_calendar.disconnected", "connector", GOOGLE_CALENDAR_PROVIDER, "Google Calendar disconnected", {}, "system");
+  res.json(state());
 });
 
 app.patch("/api/connectors/:provider", (req, res) => {
