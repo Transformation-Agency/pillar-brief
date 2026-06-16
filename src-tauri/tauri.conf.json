@@ -54,7 +54,7 @@
   },
   "plugins": {
     "updater": {
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDE4QzEzM0RGNjk4ODZDOQpSV1RKaHBqMlBST01BVm03TU5xck82SDZKamhPMitHR29JbGtZOG83RFFoeVMxTkVuUmxqQm1yWAo=",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDZDOTJDMUQxNDg1RDFDQ0EKUldUS0hGMUkwY0dTYklBdHNnRCtGM1phK1NnQTUyVC9PUWRBRnZMQWpEdk1OS3BBeThSYmk0SUUK",
       "endpoints": [
         "https://github.com/Transformation-Agency/pillar-brief/releases/latest/download/latest.json"
       ],
