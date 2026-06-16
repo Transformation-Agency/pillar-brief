@@ -26,5 +26,9 @@
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.0.0"
+  },
+  "optionalDependencies": {
+    "@emnapi/core": "1.11.1",
+    "@emnapi/runtime": "1.11.1"
   }
 }
