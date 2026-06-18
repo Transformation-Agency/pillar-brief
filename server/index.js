@@ -2681,10 +2681,10 @@ const DEFAULT_X_SOURCES = [
   ["X: BBC Breaking", "from:BBCBreaking lang:en", "BBC Breaking account search."],
   ["X: Geopolitics", "geopolitics lang:en", "Geopolitics search."],
   ["X: US politics", "\"US politics\" lang:en", "US national politics search."],
-  ["X: AP news filter", "from:AP filter:news lang:en", "Associated Press posts constrained to news-type results where supported."],
+  ["X: AP news filter", "from:AP lang:en", "Associated Press posts. Unsupported news filter removed for this connector."],
   ["X: Congress or White House", "(Congress OR \"White House\") lang:en", "Congress and White House search."],
   ["X: Supreme Court", "\"Supreme Court\" lang:en", "Supreme Court search."],
-  ["X: AI popular", "AI min_faves:500 lang:en", "AI search with popularity floor to cut noise."],
+  ["X: AI popular", "AI lang:en", "AI search. Unsupported popularity operator removed for this connector."],
   ["X: Artificial intelligence", "\"artificial intelligence\" lang:en", "Artificial intelligence search."],
   ["X: #AI", "#AI lang:en", "AI hashtag search."],
   ["X: Tech news", "\"tech news\" lang:en", "Technology news search."],
@@ -2695,7 +2695,7 @@ const DEFAULT_X_SOURCES = [
   ["X: Federal Reserve or rate cut", "(\"Federal Reserve\" OR \"rate cut\") lang:en", "Federal Reserve and rate-cut search."],
   ["X: Bloomberg Business", "from:business lang:en", "Bloomberg Business account search."],
   ["X: #science", "#science lang:en", "Science hashtag search."],
-  ["X: New study popular", "\"new study\" min_faves:1000 lang:en", "New study search with high popularity floor."],
+  ["X: New study popular", "\"new study\" lang:en", "New study search. Unsupported popularity operator removed for this connector."],
   ["X: Public health", "\"public health\" lang:en", "Public health search."],
   ["X: #MedTwitter", "#MedTwitter lang:en", "Medical community hashtag search."],
   ["X: #DIY", "#DIY lang:en", "DIY hashtag search."],
@@ -3342,6 +3342,437 @@ function topNormalizedItems(limit = 7) {
   });
 }
 
+function cleanIssueText(value = "") {
+  return String(value || "")
+    .replace(/https?:\/\/\S+/gi, " ")
+    .replace(/\bRT\s+@[\w_]+:\s*/gi, " ")
+    .replace(/[@#][\w_]+/g, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/[^a-z0-9\s]/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+}
+
+function tokenSet(value = "") {
+  const stop = new Set(["the", "and", "for", "with", "that", "this", "from", "into", "over", "after", "before", "about", "says", "will", "are", "was", "were", "has", "have", "had", "new", "news", "latest", "breaking"]);
+  return new Set(cleanIssueText(value).split(/\s+/).filter((token) => token.length > 2 && !stop.has(token)).slice(0, 40));
+}
+
+function jaccardSimilarity(a = new Set(), b = new Set()) {
+  if (!a.size || !b.size) return 0;
+  let intersect = 0;
+  for (const token of a) if (b.has(token)) intersect += 1;
+  return intersect / (a.size + b.size - intersect);
+}
+
+function canonicalStoryUrl(url = "") {
+  try {
+    const parsed = new URL(String(url || ""));
+    parsed.hash = "";
+    parsed.search = "";
+    return `${parsed.hostname.replace(/^www\./, "")}${parsed.pathname.replace(/\/+$/, "")}`.toLowerCase();
+  } catch (_) {
+    return "";
+  }
+}
+
+function sectionTagsForItem(item = {}) {
+  const text = `${item.title || ""} ${item.body || ""} ${item.source_name || ""}`.toLowerCase();
+  const tags = new Set();
+  if (/\b(supreme court|congress|white house|senate|house republican|house democrat|president|election|campaign|federal judge|administration|lawmakers?|policy|politics)\b/.test(text)) tags.add("politicalNational");
+  if (/\b(markets?|stocks?|equities|nasdaq|s&p|dow|federal reserve|rate cut|inflation|treasury|bonds?|oil|bitcoin|crypto|earnings|tariff|jobs report|unemployment|recession|gdp|bank)\b/.test(text)) tags.add("financialMarkets");
+  if (/\b(boulder|cu boulder|university of colorado boulder|boulder county|pearl street)\b/.test(text)) tags.add("boulderLocal");
+  if (/\b(colorado|denver|front range|aurora|fort collins|colorado springs|lakewood|longmont|lafayette|louisville|denverpost)\b/.test(text)) tags.add("coloradoRegional");
+  if (/\b(world|global|geopolitics|ukraine|russia|iran|israel|gaza|china|taiwan|nato|europe|eu |war|ceasefire|sanctions?|foreign minister|prime minister)\b/.test(text)) tags.add("worldGeopolitics");
+  if (/\b(ai|artificial intelligence|openai|anthropic|google|microsoft|nvidia|chips?|semiconductor|software|developer|technology|cyber|data center|robotics)\b/.test(text)) tags.add("techAi");
+  if (/\b(science|study|research|health|medical|medicine|disease|cdc|who|nih|public health|climate|physics|biology|clinical|vaccine|nutrition)\b/.test(text)) tags.add("scienceHealth");
+  return [...tags];
+}
+
+function sectionFitScore(tags = []) {
+  const weights = {
+    politicalNational: 0.22,
+    financialMarkets: 0.22,
+    boulderLocal: 0.26,
+    coloradoRegional: 0.2,
+    worldGeopolitics: 0.2,
+    techAi: 0.18,
+    scienceHealth: 0.18,
+  };
+  return tags.reduce((sum, tag) => sum + (weights[tag] || 0.08), 0);
+}
+
+function sourceReliabilityWeight(item = {}) {
+  const name = String(item.source_name || "").toLowerCase();
+  const type = String(item.source_type || "").toLowerCase();
+  let score = 0.32;
+  if (["rss", "web", "youtube"].includes(type)) score += 0.16;
+  if (type === "x") score += 0.06;
+  if (type === "reddit") score -= 0.06;
+  if (/(associated press|reuters|bbc|pbs|npr|guardian|bloomberg|new york times|washington post|wall street journal|financial times|politico|the hill|cdc|who|nih|pnas|nature|science|lancet|jama|nejm|bmj|factcheck|politifact|snopes)/i.test(name)) score += 0.18;
+  if (/(youtube|podcast|clips)/i.test(name)) score -= 0.03;
+  return score;
+}
+
+function todayNewsRows() {
+  const dayStart = startOfLocalDay().toISOString();
+  const dayEnd = endOfLocalDay().toISOString();
+  return all(`SELECT ni.*, s.name AS source_name, s.type AS source_type
+              FROM normalized_items ni
+              LEFT JOIN sources s ON s.id = ni.source_id
+              WHERE ni.published_at >= $dayStart AND ni.published_at < $dayEnd
+                AND COALESCE(s.type, '') != 'Calendar'
+              ORDER BY ni.published_at DESC, ni.created_at DESC`, { $dayStart: dayStart, $dayEnd: dayEnd });
+}
+
+function candidateFromItem(item, reference = new Date()) {
+  const body = String(item.body || "");
+  const summary = body.length > 520 ? `${body.slice(0, 517)}...` : body;
+  const tags = sectionTagsForItem(item);
+  const titleTokens = tokenSet(item.title || "");
+  const snippetTokens = tokenSet(`${item.title || ""} ${summary}`);
+  const baseQuality = sourceItemQuality(item);
+  const titleScore = baseQuality + sourceReliabilityWeight(item) + sectionFitScore(tags) + Math.min(titleTokens.size, 10) * 0.012;
+  const snippetScore = titleScore + (summary.length > 180 ? 0.16 : summary.length > 60 ? 0.07 : -0.06) + Math.min(snippetTokens.size, 24) * 0.006;
+  return {
+    id: item.id,
+    title: item.title || "Untitled item",
+    sourceId: item.source_id,
+    sourceName: item.source_name || "Unknown source",
+    sourceType: item.source_type || "",
+    url: item.canonical_url || "",
+    canonicalUrlKey: canonicalStoryUrl(item.canonical_url || ""),
+    publishedAt: item.published_at,
+    summary,
+    sectionTags: tags,
+    titleScore,
+    snippetScore,
+    qualityScore: baseQuality,
+    titleTokens: [...titleTokens],
+    snippetTokens: [...snippetTokens],
+    cacheContext: timeContextForItem(item, reference),
+    raw: item,
+  };
+}
+
+function dedupeCalendarAgenda(agenda = []) {
+  const seen = new Set();
+  const deduped = [];
+  for (const event of Array.isArray(agenda) ? agenda : []) {
+    const key = [
+      String(event.summary || event.title || "").trim().toLowerCase(),
+      String(event.start || event.startTime || ""),
+      String(event.end || event.endTime || ""),
+      String(event.htmlLink || event.url || ""),
+    ].join("|");
+    if (seen.has(key)) continue;
+    seen.add(key);
+    deduped.push(event);
+  }
+  return deduped;
+}
+
+function coverageForResults(type, results = []) {
+  const rows = Array.isArray(results) ? results : [];
+  return {
+    type,
+    attempted: rows.length,
+    succeeded: rows.filter((result) => result.ok !== false && !result.skipped).length,
+    failed: rows.filter((result) => result.ok === false).length,
+    skipped: rows.filter((result) => result.skipped).length,
+    fetched: rows.reduce((sum, result) => sum + Number(result.seen || result.today || result.fetched || 0), 0),
+    today: rows.reduce((sum, result) => sum + Number(result.today || 0), 0),
+    inserted: rows.reduce((sum, result) => sum + Number(result.inserted || 0), 0),
+    reused: rows.reduce((sum, result) => sum + Number(result.reused || result.preflight || 0), 0),
+  };
+}
+
+function buildCoverageDiagnostics({ activeSources = [], sourceResults = {}, itemCount = 0, candidateCount = 0, calendarAgenda = [] } = {}) {
+  const groups = {
+    x: coverageForResults("X", sourceResults.xFetches),
+    rss: coverageForResults("RSS/YouTube", sourceResults.rssFetches),
+    reddit: coverageForResults("Reddit", sourceResults.redditFetches),
+    web: coverageForResults("Web", sourceResults.webFetches),
+    calendar: coverageForResults("Calendar", sourceResults.calendarFetches),
+    podcast: coverageForResults("Podcast", sourceResults.podcastTranscriptions),
+  };
+  const topFailures = [];
+  for (const [type, rows] of Object.entries({
+    x: sourceResults.xFetches || [],
+    rss: sourceResults.rssFetches || [],
+    reddit: sourceResults.redditFetches || [],
+    web: sourceResults.webFetches || [],
+    calendar: sourceResults.calendarFetches || [],
+    podcast: sourceResults.podcastTranscriptions || [],
+  })) {
+    for (const result of rows) {
+      if (result?.ok === false) topFailures.push({
+        type,
+        source: result.sourceName || result.source || result.name || result.url || result.sourceId || "Unknown source",
+        error: String(result.error || result.reason || "Unknown failure").slice(0, 260),
+      });
+    }
+  }
+  const warnings = [];
+  if (groups.reddit.failed) warnings.push(`Reddit coverage degraded: ${groups.reddit.failed} source${groups.reddit.failed === 1 ? "" : "s"} failed, often due to 403/429 access limits.`);
+  const unsupportedX = topFailures.filter((failure) => failure.type === "x" && /(min_faves|filter:news|unsupported)/i.test(failure.error));
+  if (unsupportedX.length) warnings.push(`Some X searches used unsupported operators and were not counted as reliable coverage: ${unsupportedX.map((failure) => failure.source).slice(0, 4).join(", ")}.`);
+  if (groups.x.failed) warnings.push(`X coverage degraded: ${groups.x.failed} search${groups.x.failed === 1 ? "" : "es"} failed.`);
+  if (groups.rss.failed) warnings.push(`RSS/YouTube coverage degraded: ${groups.rss.failed} feed${groups.rss.failed === 1 ? "" : "s"} failed or blocked.`);
+  if (!candidateCount && itemCount) warnings.push("Sources fetched items, but no same-day non-calendar news candidates qualified for ranking.");
+  return {
+    generatedAt: now(),
+    activeSourceCount: activeSources.length,
+    itemCount,
+    candidateCount,
+    calendarAgendaCount: calendarAgenda.length,
+    byType: groups,
+    topFailures: topFailures.slice(0, 18),
+    warnings,
+  };
+}
+
+function articleTextFromHtml(html = "") {
+  const withoutNoise = String(html || "")
+    .replace(/<script\b[\s\S]*?<\/script>/gi, " ")
+    .replace(/<style\b[\s\S]*?<\/style>/gi, " ")
+    .replace(/<noscript\b[\s\S]*?<\/noscript>/gi, " ");
+  const article = withoutNoise.match(/<article\b[\s\S]*?<\/article>/i)?.[0]
+    || withoutNoise.match(/<main\b[\s\S]*?<\/main>/i)?.[0]
+    || withoutNoise;
+  return stripHtml(article).replace(/\s+/g, " ").trim();
+}
+
+async function evidencePacketForCandidate(candidate = {}) {
+  const base = {
+    itemId: candidate.id,
+    title: candidate.title,
+    sourceName: candidate.sourceName,
+    sourceType: candidate.sourceType,
+    url: candidate.url,
+    sectionTags: candidate.sectionTags,
+    summary: candidate.summary,
+    status: "rss-summary-only",
+    text: candidate.summary || "",
+    chars: String(candidate.summary || "").length,
+  };
+  if (!/^https?:\/\//i.test(candidate.url || "")) return base;
+  try {
+    const response = await fetchWithTimeout(candidate.url, {
+      headers: { "User-Agent": "PillarBrief/0.1 (+https://github.com/Transformation-Agency/pillar-brief)" },
+    }, 8000);
+    if ([401, 402, 403, 451].includes(response.status)) return { ...base, status: "blocked", httpStatus: response.status };
+    if (!response.ok) return { ...base, status: "fetch-failed", httpStatus: response.status };
+    const contentType = response.headers.get("content-type") || "";
+    if (contentType && !/(html|text|xml|json)/i.test(contentType)) return base;
+    const html = await response.text();
+    const text = articleTextFromHtml(html);
+    if (/paywall|subscribe to continue|sign in to continue|enable javascript/i.test(text.slice(0, 1200))) {
+      return { ...base, status: "paywalled", httpStatus: response.status, text: text.slice(0, 1600), chars: text.length };
+    }
+    if (text.length < 500) return { ...base, status: "rss-summary-only", httpStatus: response.status, text: candidate.summary || text.slice(0, 1200), chars: text.length };
+    return { ...base, status: "full-text", httpStatus: response.status, text: text.slice(0, 3600), chars: text.length };
+  } catch (error) {
+    return { ...base, status: "fetch-failed", error: String(error.message || error).slice(0, 200) };
+  }
+}
+
+async function mapWithConcurrency(items = [], limit = 4, worker = async (item) => item) {
+  const results = new Array(items.length);
+  let index = 0;
+  async function next() {
+    while (index < items.length) {
+      const current = index;
+      index += 1;
+      results[current] = await worker(items[current], current);
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, next));
+  return results;
+}
+
+function clusterCandidates(candidates = []) {
+  const clusters = [];
+  for (const candidate of candidates) {
+    const tokens = new Set(candidate.snippetTokens || candidate.titleTokens || []);
+    let match = null;
+    for (const cluster of clusters) {
+      const sameUrl = candidate.canonicalUrlKey && cluster.urlKeys.has(candidate.canonicalUrlKey);
+      const similarity = jaccardSimilarity(tokens, cluster.tokens);
+      if (sameUrl || similarity >= 0.58) {
+        match = cluster;
+        break;
+      }
+    }
+    if (!match) {
+      match = {
+        id: `cluster-${clusters.length + 1}`,
+        lead: candidate,
+        items: [],
+        sources: new Set(),
+        sourceTypes: new Set(),
+        tags: new Set(candidate.sectionTags || []),
+        tokens,
+        urlKeys: new Set(),
+      };
+      clusters.push(match);
+    }
+    match.items.push(candidate);
+    match.sources.add(candidate.sourceName);
+    match.sourceTypes.add(candidate.sourceType);
+    (candidate.sectionTags || []).forEach((tag) => match.tags.add(tag));
+    if (candidate.canonicalUrlKey) match.urlKeys.add(candidate.canonicalUrlKey);
+    if (candidate.snippetScore > match.lead.snippetScore) match.lead = candidate;
+    match.tokens = new Set([...match.tokens, ...tokens].slice(0, 80));
+  }
+  return clusters.map((cluster, index) => {
+    const sourceCount = cluster.sources.size;
+    const corroboration = sourceCount > 1 ? Math.min(0.32, 0.12 * (sourceCount - 1)) : 0;
+    const score = cluster.lead.snippetScore + corroboration + Math.log(cluster.items.length + 1) * 0.08;
+    return {
+      id: `issue-${index + 1}`,
+      title: cluster.lead.title,
+      summary: cluster.lead.summary,
+      leadItemId: cluster.lead.id,
+      leadUrl: cluster.lead.url,
+      leadSource: cluster.lead.sourceName,
+      publishedAt: cluster.lead.publishedAt,
+      sectionTags: [...cluster.tags],
+      sourceNames: [...cluster.sources],
+      sourceTypes: [...cluster.sourceTypes],
+      itemIds: cluster.items.map((item) => item.id),
+      score,
+      items: cluster.items.map((item) => ({
+        id: item.id,
+        sourceId: item.sourceId,
+        title: item.title,
+        sourceName: item.sourceName,
+        sourceType: item.sourceType,
+        url: item.url,
+        publishedAt: item.publishedAt,
+        summary: item.summary,
+        sectionTags: item.sectionTags,
+        relevanceScore: item.raw?.relevance_score,
+        risingScore: item.raw?.rising_score,
+        cacheContext: item.cacheContext,
+      })),
+    };
+  }).sort((a, b) => b.score - a.score);
+}
+
+function selectIssueClusters(clusters = [], min = 12, max = 18) {
+  const selected = [];
+  const selectedIds = new Set();
+  const addBestForTag = (tag, count = 1) => {
+    for (const cluster of clusters) {
+      if (selected.length >= max) return;
+      if (selectedIds.has(cluster.id) || !cluster.sectionTags.includes(tag)) continue;
+      selected.push(cluster);
+      selectedIds.add(cluster.id);
+      if (selected.filter((item) => item.sectionTags.includes(tag)).length >= count) return;
+    }
+  };
+  addBestForTag("politicalNational", 2);
+  addBestForTag("financialMarkets", 2);
+  addBestForTag("boulderLocal", 1);
+  addBestForTag("coloradoRegional", 1);
+  addBestForTag("worldGeopolitics", 1);
+  for (const cluster of clusters) {
+    if (selected.length >= max) break;
+    if (selectedIds.has(cluster.id)) continue;
+    const techScienceCount = selected.filter((item) => item.sectionTags.includes("techAi") || item.sectionTags.includes("scienceHealth")).length;
+    if (techScienceCount < 2 && (cluster.sectionTags.includes("techAi") || cluster.sectionTags.includes("scienceHealth"))) {
+      selected.push(cluster);
+      selectedIds.add(cluster.id);
+    }
+  }
+  for (const cluster of clusters) {
+    if (selected.length >= Math.min(max, Math.max(min, clusters.length))) break;
+    if (selectedIds.has(cluster.id)) continue;
+    selected.push(cluster);
+    selectedIds.add(cluster.id);
+  }
+  return selected.sort((a, b) => b.score - a.score).slice(0, max);
+}
+
+function issueFromCluster(cluster, evidencePacketsById = new Map(), reference = new Date()) {
+  const lead = cluster.items.find((item) => item.id === cluster.leadItemId) || cluster.items[0] || {};
+  const evidence = evidencePacketsById.get(lead.id);
+  return {
+    id: lead.id,
+    clusterId: cluster.id,
+    title: cluster.title,
+    sourceId: lead.sourceId,
+    sourceName: lead.sourceName || cluster.leadSource || "Unknown source",
+    sourceType: lead.sourceType || "",
+    url: lead.url || cluster.leadUrl,
+    publishedAt: lead.publishedAt || cluster.publishedAt,
+    summary: evidence?.text ? String(evidence.text).slice(0, 520) : cluster.summary,
+    whyJackShouldCare: specificIssueCare({ ...lead, sourceName: lead.sourceName || cluster.leadSource, summary: cluster.summary }),
+    futureImplication: specificFutureImplication({ ...lead, summary: cluster.summary }),
+    doctrineImpact: "Needs human review before it becomes a brief claim, public post, or doctrine update.",
+    relevanceScore: lead.relevanceScore,
+    risingScore: lead.risingScore,
+    qualityScore: cluster.score,
+    sectionTags: cluster.sectionTags,
+    corroboratingSources: cluster.sourceNames,
+    clusterItemCount: cluster.itemIds.length,
+    evidenceStatus: evidence?.status || "rss-summary-only",
+    cacheContext: lead.cacheContext || timeContextForItem(lead.raw || lead, reference),
+  };
+}
+
+async function buildRigorousBriefInputs({ activeSources = [], sourceResults = {}, itemCount = 0 } = {}) {
+  const reference = new Date();
+  const calendarAgenda = dedupeCalendarAgenda(sourceResults.calendarAgenda || []);
+  const candidates = todayNewsRows()
+    .map((item) => candidateFromItem(item, reference))
+    .filter((candidate) => candidate.qualityScore > -0.25 && candidate.title);
+  const titleRanked = [...candidates].sort((a, b) => b.titleScore - a.titleScore || String(b.publishedAt).localeCompare(String(a.publishedAt)));
+  const snippetRanked = titleRanked.slice(0, 60).sort((a, b) => b.snippetScore - a.snippetScore || String(b.publishedAt).localeCompare(String(a.publishedAt)));
+  const evidenceCandidates = snippetRanked.slice(0, 24);
+  const evidencePackets = await mapWithConcurrency(evidenceCandidates, 4, evidencePacketForCandidate);
+  const evidencePacketsById = new Map(evidencePackets.map((packet) => [packet.itemId, packet]));
+  const clusters = clusterCandidates(snippetRanked).map((cluster) => {
+    const evidenceHits = cluster.itemIds.map((itemId) => evidencePacketsById.get(itemId)).filter(Boolean);
+    const fullTextBonus = evidenceHits.some((packet) => packet.status === "full-text") ? 0.18 : 0;
+    const blockedPenalty = evidenceHits.length && evidenceHits.every((packet) => ["blocked", "paywalled", "fetch-failed"].includes(packet.status)) ? -0.08 : 0;
+    return { ...cluster, score: cluster.score + fullTextBonus + blockedPenalty, evidenceStatuses: [...new Set(evidenceHits.map((packet) => packet.status))] };
+  }).sort((a, b) => b.score - a.score);
+  const selectedIssueClusters = selectIssueClusters(clusters, 12, 18);
+  const selectedIssues = selectedIssueClusters.map((cluster) => issueFromCluster(cluster, evidencePacketsById, reference));
+  const candidateScan = {
+    generatedAt: now(),
+    totalCandidates: candidates.length,
+    titleScanned: titleRanked.length,
+    snippetScanned: snippetRanked.length,
+    evidencePacketCount: evidencePackets.length,
+    clusterCount: clusters.length,
+    selectedClusterCount: selectedIssueClusters.length,
+    titleTop: titleRanked.slice(0, 40).map((candidate) => ({
+      id: candidate.id,
+      title: candidate.title,
+      sourceName: candidate.sourceName,
+      sourceType: candidate.sourceType,
+      publishedAt: candidate.publishedAt,
+      sectionTags: candidate.sectionTags,
+      titleScore: Number(candidate.titleScore.toFixed(3)),
+    })),
+    snippetTop: snippetRanked.slice(0, 40).map((candidate) => ({
+      id: candidate.id,
+      title: candidate.title,
+      sourceName: candidate.sourceName,
+      sourceType: candidate.sourceType,
+      sectionTags: candidate.sectionTags,
+      snippetScore: Number(candidate.snippetScore.toFixed(3)),
+      summary: candidate.summary,
+    })),
+  };
+  const coverageDiagnostics = buildCoverageDiagnostics({ activeSources, sourceResults, itemCount, candidateCount: candidates.length, calendarAgenda });
+  return { selectedIssues, selectedIssueClusters, evidencePackets, candidateScan, coverageDiagnostics, calendarAgenda };
+}
+
 function markItemsUsedInBrief(items = []) {
   const t = now();
   for (const item of items) {
@@ -3360,6 +3791,14 @@ function deterministicStrategicBrief({ selectedIssues, lenses: lensRows, council
   const brief = {
     mode: "deterministic-fallback",
     headline: lead ? `Today’s strongest signal is ${lead.title}` : "No usable source items published today",
+    topIssues: selectedIssues.slice(0, 12).map((issue, index) => ({
+      rank: index + 1,
+      title: issue.title,
+      read: issue.summary || issue.whyJackShouldCare || "Monitor this as a source-backed signal from today.",
+      sources: issue.corroboratingSources || [issue.sourceName].filter(Boolean),
+      whyItMatters: issue.whyJackShouldCare || specificIssueCare(issue),
+    })),
+    coverageNotes: [],
     executiveRead: lead
       ? `The strongest item today is "${lead.title}" from ${lead.sourceName}.${leadSummary} Treat this as a monitored signal, not a settled conclusion: it needs corroboration from a primary source or another high-signal community before ${owner} should act on it.`
       : "The workflow ran, but did not ingest enough usable source material to produce an intelligence read.",
@@ -3475,10 +3914,10 @@ function validateStrategicBrief(brief) {
   return brief;
 }
 
-async function synthesizeStrategicBrief({ selectedIssues, sourceResults }) {
+async function synthesizeStrategicBrief({ selectedIssues, sourceResults, selectedIssueClusters = [], evidencePackets = [], candidateScan = {}, coverageDiagnostics = {}, calendarAgenda: explicitCalendarAgenda }) {
   const config = briefConfig();
   const owner = config.ownerName || "the brief owner";
-  const calendarAgenda = Array.isArray(sourceResults?.calendarAgenda) ? sourceResults.calendarAgenda : [];
+  const calendarAgenda = Array.isArray(explicitCalendarAgenda) ? explicitCalendarAgenda : (Array.isArray(sourceResults?.calendarAgenda) ? sourceResults.calendarAgenda : []);
   if (!selectedIssues.length && !calendarAgenda.length) throw new Error("No usable source items or calendar events from today were selected. Add or fix sources, then generate again.");
   const enabledAnalyzers = sanitizeAnalyzerList(config.analyzers, defaultAnalyzers()).filter((analyzer) => analyzer.enabled !== false);
   const enabledSections = (config.sections || []).filter((section) => section.enabled !== false).map((section) => {
@@ -3492,8 +3931,11 @@ async function synthesizeStrategicBrief({ selectedIssues, sourceResults }) {
     `Write ${owner}'s private daily brief.`,
     "Make it useful, readable, and direct. It should feel like a smart person wrote it for another smart person over coffee.",
     "Use the source items for claims about what happened. Use common knowledge only to explain context or jargon.",
-    "Only use selected source items that were published today for the brief's news/signals. Do not include older posts just because they were discovered or cached today.",
+    "Write an up-to-two-page rigorous daily brief, not a one-page skim.",
+    "Only use selected issue clusters and evidence packets that were published today for the brief's news/signals. Do not include older posts just because they were discovered or cached today.",
     "Calendar agenda entries are private schedule context, not news. Use them only for agenda, prep, conflicts, sequencing, and focus recommendations.",
+    "Do not say a section has no news merely because it was not selected. You may say coverage was quiet only when relevant sources succeeded and there were no qualifying candidates.",
+    "If coverage was degraded, blocked, rate-limited, or fetches failed, say that in Coverage Notes instead of overclaiming quiet.",
     "Do not invent quotes, source details, outcomes, companies, people, or numbers.",
     `Audience context: ${config.audienceContext || `${owner} is smart but may not know every term.`}`,
     `Voice rules: ${config.voiceRules || "Clear, concise, plain-English, with a little personality. Avoid corporate language."}`,
@@ -3509,14 +3951,16 @@ async function synthesizeStrategicBrief({ selectedIssues, sourceResults }) {
     "Return only valid JSON.",
   ].join(" ");
   const prompt = JSON.stringify({
-    task: `Create a readable one-page strategic brief for ${owner} from the selected source items.`,
+    task: `Create an up-to-two-page rigorous daily brief for ${owner} from selected issue clusters, evidence packets, calendar agenda, and coverage diagnostics.`,
     requiredJsonShape: {
       mode: "model",
       headline: "one sentence",
       titleSummary: "8-16 words for the saved title after the date; concrete main points only, no date",
+      coverageNotes: ["short bullets disclosing degraded, failed, blocked, rate-limited, or thin coverage"],
+      topIssues: [{ rank: 1, title: "issue title", read: "1-2 sentence analyst read", sources: ["source names"], whyItMatters: "why this matters or what decision it affects" }],
       sectionResponses: Object.fromEntries(enabledSections
         .filter((section) => section.key !== "sourceEvidence")
-        .map((section) => [section.key, `${section.label}: answer this section using its instruction, today's selected source items, and calendarAgenda when relevant`])),
+        .map((section) => [section.key, `${section.label}: answer this section using its instruction, selectedIssueClusters, evidencePackets, coverageDiagnostics, and calendarAgenda when relevant`])),
       executiveRead: "2-3 readable paragraphs that explain what matters",
       backgroundContext: ["helpful context or definitions only if needed"],
       whyJackShouldCare: ["sharp bullets on why this is worth attention"],
@@ -3542,9 +3986,20 @@ async function synthesizeStrategicBrief({ selectedIssues, sourceResults }) {
       analyzerBehavior: config.analyzerBehavior || defaultAnalyzerBehavior,
     },
     selectedIssues,
+    selectedIssueClusters,
+    evidencePackets,
+    candidateScan,
     calendarAgenda,
-    sourceFreshnessPolicy: "Selected source items have publishedAt dates from today only. If no selectedIssues are present, say there were no usable items published today.",
-    sourceResults,
+    coverageDiagnostics,
+    sourceFreshnessPolicy: "Selected issue clusters have publishedAt dates from today only. Calendar is agenda only. Never say 'no news' for a section when coverageDiagnostics shows relevant coverage was degraded or relevant unselected candidates existed.",
+    sourceResultsSummary: {
+      xFetches: sourceResults?.xFetches?.length || 0,
+      rssFetches: sourceResults?.rssFetches?.length || 0,
+      redditFetches: sourceResults?.redditFetches?.length || 0,
+      webFetches: sourceResults?.webFetches?.length || 0,
+      calendarFetches: sourceResults?.calendarFetches?.length || 0,
+      podcastTranscriptions: sourceResults?.podcastTranscriptions?.length || 0,
+    },
   });
   let text = await callTextModel({ system, prompt });
   let lastError = null;
@@ -3566,6 +4021,9 @@ async function synthesizeStrategicBrief({ selectedIssues, sourceResults }) {
       required: "Use natural direct language. Keep the facts grounded. Include a concrete titleSummary that names the main points and does not include the date. Return only valid JSON in the required shape.",
       previousDraft: text,
       selectedIssues,
+      selectedIssueClusters,
+      evidencePackets,
+      coverageDiagnostics,
       analyzers: enabledAnalyzers.map((analyzer) => ({ name: analyzer.name, role: analyzer.role, description: analyzer.description, instructions: analyzer.instructions })),
       analyzerBehavior: config.analyzerBehavior || defaultAnalyzerBehavior,
     });
@@ -3598,6 +4056,8 @@ function hydrateArtifact(artifact = {}) {
 
 function renderOnePageBrief(artifact = {}) {
   const issues = artifact.selectedIssues || [];
+  const issueClusters = artifact.selectedIssueClusters || [];
+  const coverageDiagnostics = artifact.coverageDiagnostics || {};
   const config = briefConfig();
   const sections = (config.sections || []).filter((section) => section.enabled !== false);
   const brief = artifact.strategicBrief || deterministicStrategicBrief({ selectedIssues: issues, lenses: [], council: artifact.council, config });
@@ -3626,13 +4086,52 @@ function renderOnePageBrief(artifact = {}) {
     lines.push("", `## ${section.label || "Source Evidence"}`);
     if (!issues.length) lines.push("No selected issues yet. The workflow completed but did not ingest enough source items to compile a brief.");
     else {
-      issues.slice(0, 7).forEach((issue, index) => {
-        lines.push(`${index + 1}. ${issue.title} (${issue.sourceName}${issue.publishedAt ? `, ${new Date(issue.publishedAt).toLocaleString()}` : ""})`);
+      issues.slice(0, 18).forEach((issue, index) => {
+        const sources = Array.isArray(issue.corroboratingSources) && issue.corroboratingSources.length ? issue.corroboratingSources.join(", ") : issue.sourceName;
+        lines.push(`${index + 1}. ${issue.title} (${sources}${issue.publishedAt ? `, ${new Date(issue.publishedAt).toLocaleString()}` : ""})`);
         if (issue.summary) lines.push(`   ${issue.summary}`);
+        if (issue.sectionTags?.length) lines.push(`   Sections: ${issue.sectionTags.join(", ")}`);
+        if (issue.evidenceStatus) lines.push(`   Evidence: ${issue.evidenceStatus}${issue.clusterItemCount ? `; ${issue.clusterItemCount} clustered item${issue.clusterItemCount === 1 ? "" : "s"}` : ""}`);
         if (issue.cacheContext?.framing) lines.push(`   Context: ${issue.cacheContext.framing}`);
         if (issue.url) lines.push(`   ${issue.url}`);
       });
     }
+  };
+  const renderTopIssues = () => {
+    const topIssues = Array.isArray(brief.topIssues) && brief.topIssues.length
+      ? brief.topIssues
+      : issueClusters.slice(0, 18).map((cluster, index) => ({
+        rank: index + 1,
+        title: cluster.title,
+        read: cluster.summary,
+        sources: cluster.sourceNames,
+        whyItMatters: cluster.sectionTags?.join(", "),
+      }));
+    lines.push("", "## Top Issues");
+    if (!topIssues.length) {
+      lines.push("No selected news issue clusters were available. See Coverage Notes for source health.");
+      return;
+    }
+    topIssues.slice(0, 18).forEach((issue, index) => {
+      const rank = issue.rank || index + 1;
+      const sources = Array.isArray(issue.sources) ? issue.sources.join(", ") : "";
+      lines.push(`${rank}. ${issue.title || "Untitled issue"}${sources ? ` (${sources})` : ""}`);
+      if (issue.read) lines.push(`   ${issue.read}`);
+      if (issue.whyItMatters) lines.push(`   Why it matters: ${issue.whyItMatters}`);
+    });
+  };
+  const renderCoverageNotes = () => {
+    const notes = Array.isArray(brief.coverageNotes) && brief.coverageNotes.length
+      ? brief.coverageNotes
+      : (Array.isArray(coverageDiagnostics.warnings) ? coverageDiagnostics.warnings : []);
+    lines.push("", "## Coverage Notes");
+    if (!notes.length) {
+      lines.push("- No major source coverage degradation reported by the fetch layer.");
+      return;
+    }
+    notes.forEach((note) => lines.push(`- ${typeof note === "string" ? note : JSON.stringify(note)}`));
+    const failures = Array.isArray(coverageDiagnostics.topFailures) ? coverageDiagnostics.topFailures.slice(0, 6) : [];
+    failures.forEach((failure) => lines.push(`- ${failure.source || failure.type}: ${failure.error || "Fetch failed"}`));
   };
   const renderConfiguredSection = (section) => {
     if (section.key === "sourceEvidence") {
@@ -3645,6 +4144,7 @@ function renderOnePageBrief(artifact = {}) {
       ?? fallbackSectionContent(section, issues, config);
     renderContent(content);
   };
+  renderTopIssues();
   if (sections.length) {
     sections.forEach(renderConfiguredSection);
   } else {
@@ -3661,6 +4161,7 @@ function renderOnePageBrief(artifact = {}) {
       { key: "openQuestions", label: "Open Questions Before Approval" },
     ].forEach(renderConfiguredSection);
   }
+  renderCoverageNotes();
   return lines.join("\n");
 }
 
@@ -3914,13 +4415,14 @@ async function executeWorkflow(trigger = "Manual", options = {}) {
     finishProgress("retrieve", `${docs.length} active document${docs.length === 1 ? "" : "s"} available`);
     writeProgress("select");
     await progressDelay();
-    const selectedIssues = topNormalizedItems();
-    finishProgress("select", `${selectedIssues.length} top issue${selectedIssues.length === 1 ? "" : "s"} selected`);
+    const rigorousInputs = await buildRigorousBriefInputs({ activeSources, sourceResults, itemCount });
+    const { selectedIssues, selectedIssueClusters, evidencePackets, candidateScan, coverageDiagnostics, calendarAgenda } = rigorousInputs;
+    finishProgress("select", `${selectedIssueClusters.length} issue cluster${selectedIssueClusters.length === 1 ? "" : "s"} selected from ${candidateScan.totalCandidates || 0} same-day news candidates`);
     writeProgress("synthesize");
     await progressDelay();
-    const strategicBrief = await synthesizeStrategicBrief({ selectedIssues, sourceResults });
+    const strategicBrief = await synthesizeStrategicBrief({ selectedIssues, sourceResults, selectedIssueClusters, evidencePackets, candidateScan, coverageDiagnostics, calendarAgenda });
     finishProgress("synthesize", "Strategic synthesis generated");
-    audit("brief.synthesized", "workflow_run", runId, `Strategic brief synthesized with ${strategicBrief.mode || "model"}`, { selectedIssues: selectedIssues.length }, "system");
+    audit("brief.synthesized", "workflow_run", runId, `Strategic brief synthesized with ${strategicBrief.mode || "model"}`, { selectedIssues: selectedIssues.length, selectedIssueClusters: selectedIssueClusters.length }, "system");
     writeProgress("render");
     await progressDelay();
     const generatedAt = now();
@@ -3928,13 +4430,17 @@ async function executeWorkflow(trigger = "Manual", options = {}) {
     title: briefArtifactTitle({ generatedAt, strategicBrief, selectedIssues }),
     generatedAt,
     selectedIssues,
+    selectedIssueClusters,
+    evidencePackets,
+    candidateScan,
+    coverageDiagnostics,
     podcastTranscriptions: transcriptionResults,
     xFetches: xResults,
     rssFetches: rssResults,
     redditFetches: redditResults,
     webFetches: webResults,
     calendarFetches: calendarResults,
-    calendarAgenda: sourceResults.calendarAgenda || [],
+    calendarAgenda,
     strategicBrief,
     whyJackShouldCare: Array.isArray(strategicBrief.whyJackShouldCare) ? strategicBrief.whyJackShouldCare.join("\n") : strategicBrief.whyJackShouldCare || "",
     implications: strategicBrief.futureImplications || [],
@@ -4003,7 +4509,7 @@ async function executeWorkflow(trigger = "Manual", options = {}) {
     if (key === "normalize") output = `${itemCount} normalized item${itemCount === 1 ? "" : "s"}`;
     if (key === "score") output = `${itemCount} scored item${itemCount === 1 ? "" : "s"}`;
     if (key === "retrieve") output = `${docs.length} active document${docs.length === 1 ? "" : "s"} available`;
-    if (key === "select") output = `${selectedIssues.length} top issue${selectedIssues.length === 1 ? "" : "s"} selected`;
+    if (key === "select") output = `${selectedIssueClusters.length} issue cluster${selectedIssueClusters.length === 1 ? "" : "s"} selected`;
     if (key === "synthesize") {
       const model = modelSettings();
       detail = model.status === "ready" ? `Model adapter ready: ${model.provider}/${model.model}` : "Model adapter is pending credentials; no generated text was fabricated.";
