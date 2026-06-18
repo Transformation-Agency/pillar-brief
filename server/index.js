@@ -10,9 +10,21 @@ import { DatabaseSync } from "node:sqlite";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, "..");
-const appMode = process.env.PILLAR_APP_MODE || (process.env.PILLAR_DESKTOP ? "desktop" : "web");
+const packagedAppMatch = __dirname.match(/\/Applications\/([^/]+\.app)\//);
+const packagedAppName = packagedAppMatch ? packagedAppMatch[1].replace(/\.app$/, "") : "";
+const appMode = process.env.PILLAR_APP_MODE || (process.env.PILLAR_DESKTOP || packagedAppName ? "desktop" : "web");
 const isDesktop = appMode === "desktop";
-const dataDir = process.env.PILLAR_DATA_DIR ? path.resolve(process.env.PILLAR_DATA_DIR) : path.join(root, "data");
+function defaultDesktopDataDir() {
+  if (process.platform !== "darwin") return path.join(root, "data");
+  if (packagedAppName === "Pillar Brief") return path.join(process.env.HOME || root, "Library", "Application Support", "com.pillarbrief.desktop");
+  return path.join(root, "data");
+}
+function resolveDataDir() {
+  const configured = process.env.PILLAR_DATA_DIR ? path.resolve(process.env.PILLAR_DATA_DIR) : "";
+  if (packagedAppName === "Pillar Brief" && /com\.pillartime\.desktop/i.test(configured)) return defaultDesktopDataDir();
+  return configured || (isDesktop ? defaultDesktopDataDir() : path.join(root, "data"));
+}
+const dataDir = resolveDataDir();
 fs.mkdirSync(dataDir, { recursive: true });
 const dbPath = process.env.PILLAR_DB_PATH ? path.resolve(process.env.PILLAR_DB_PATH) : path.join(dataDir, "pillar-brief.sqlite");
 const execFileAsync = promisify(execFile);
