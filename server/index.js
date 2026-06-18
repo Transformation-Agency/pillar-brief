@@ -5784,7 +5784,8 @@ app.post("/api/telegram/commands", async (req, res) => {
   }
 });
 
-if (process.env.NODE_ENV === "production") {
+const hasBuiltClient = fs.existsSync(path.join(root, "dist", "index.html"));
+if (process.env.NODE_ENV === "production" || isDesktop || hasBuiltClient) {
   app.use(express.static(path.join(root, "dist")));
   app.get(/.*/, (req, res) => res.sendFile(path.join(root, "dist", "index.html")));
 } else {
