@@ -2633,6 +2633,40 @@ const DEFAULT_RSS_SOURCES = [
   ["Snopes", "https://www.snopes.com/feed/", "Snopes RSS feed."],
 ];
 
+const DEFAULT_REDDIT_SOURCE_CATALOG_VERSION = "2026-06-18-reddit-catalog-v1";
+const DEFAULT_REDDIT_SOURCES = [
+  ["r/worldnews", "worldnews", "News and world events foundation."],
+  ["r/news", "news", "General news and major current events."],
+  ["r/qualitynews", "qualitynews", "Higher-signal news submissions."],
+  ["r/NeutralPolitics", "NeutralPolitics", "Strictly sourced political discussion with low heat."],
+  ["r/TrueReddit", "TrueReddit", "Long-form and thoughtful articles."],
+  ["r/OutOfTheLoop", "OutOfTheLoop", "Context for stories, memes, and topics currently blowing up."],
+  ["r/technology", "technology", "Broad technology news."],
+  ["r/programming", "programming", "Programming, industry, and language news."],
+  ["r/technews", "technews", "Technology news headlines."],
+  ["r/Futurology", "Futurology", "Technology, science, and society overlap."],
+  ["r/artificial", "artificial", "Artificial intelligence developments."],
+  ["r/investing", "investing", "Steadier investing discussion and market news."],
+  ["r/finance", "finance", "Finance industry and macro news."],
+  ["r/personalfinance", "personalfinance", "Practical personal money management."],
+  ["r/economics", "economics", "Economics research and policy discussion."],
+  ["r/Bogleheads", "Bogleheads", "Long-term, evidence-based investing."],
+  ["r/DIY", "DIY", "Do-it-yourself projects and making."],
+  ["r/woodworking", "woodworking", "Woodworking projects and craft discussion."],
+  ["r/somethingimade", "somethingimade", "User-made projects across media and craft."],
+  ["r/functionalprint", "functionalprint", "Practical 3D printing projects."],
+  ["r/books", "books", "Books, publishing, and reading culture."],
+  ["r/Art", "Art", "Art and visual culture."],
+  ["r/movies", "movies", "Film news, discussion, and criticism."],
+  ["r/ArtefactPorn", "ArtefactPorn", "Historical objects and artifacts."],
+  ["r/museum", "museum", "Museum objects, exhibits, and cultural heritage."],
+  ["r/health", "health", "Health news and discussion."],
+  ["r/science", "science", "Broad research-first science coverage."],
+  ["r/Fitness", "Fitness", "Fitness training and health discussion."],
+  ["r/nutrition", "nutrition", "Nutrition discussion with an evidence-oriented bent."],
+  ["r/medicine", "medicine", "Clinician-oriented medicine news and discussion."],
+];
+
 function seedSourceRecord({ name, type = "RSS", locator, status = "active", note = "", config }) {
   const t = now();
   const existing = get("SELECT * FROM sources WHERE name=$name OR locator=$locator", { $name: name, $locator: locator });
@@ -2674,6 +2708,26 @@ function seedDefaultRssSources() {
   });
 }
 
+function seedDefaultRedditSources() {
+  const markerKey = "default_reddit_source_catalog_version";
+  if (get("SELECT value FROM app_state WHERE key=$key", { $key: markerKey })?.value === DEFAULT_REDDIT_SOURCE_CATALOG_VERSION) return;
+  for (const [name, subreddit, note] of DEFAULT_REDDIT_SOURCES) {
+    seedSourceRecord({
+      name,
+      type: "Reddit",
+      locator: `r/${subreddit}`,
+      note,
+      config: { mode: "subreddit", subreddits: subreddit },
+    });
+  }
+  run(`INSERT INTO app_state (key, value, updated_at) VALUES ($key, $value, $t)
+       ON CONFLICT(key) DO UPDATE SET value=$value, updated_at=$t`, {
+    $key: markerKey,
+    $value: DEFAULT_REDDIT_SOURCE_CATALOG_VERSION,
+    $t: now(),
+  });
+}
+
 function audit(action, entityType, entityId, note = "", diff = {}, actor = "operator") {
   run(`INSERT INTO audit_logs (id, ts, actor, action, entity_type, entity_id, note, diff_json)
        VALUES ($id, $ts, $actor, $action, $entityType, $entityId, $note, $diff)`, {
@@ -2684,6 +2738,7 @@ function audit(action, entityType, entityId, note = "", diff = {}, actor = "oper
 
 function seed() {
   seedDefaultRssSources();
+  seedDefaultRedditSources();
   const count = get("SELECT COUNT(*) AS n FROM lenses").n;
   const t = now();
   if (count === 0) {
