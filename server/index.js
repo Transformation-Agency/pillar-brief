@@ -2331,13 +2331,14 @@ async function fetchSourceCollection({ useRecentCache = false, onProgress } = {}
   const podcastSources = activeSources.filter((s) => s.type === "Podcast");
   const xSources = activeSources.filter((s) => s.type === "X");
   const rssSources = activeSources.filter((s) => s.type === "RSS");
+  const youtubeSources = activeSources.filter((s) => s.type === "YouTube");
   const redditSources = activeSources.filter((s) => s.type === "Reddit");
   const webSources = activeSources.filter((s) => s.type === "Web");
   const calendarSources = activeSources.filter((s) => s.type === "Calendar");
   const transcriptionSources = podcastSources.filter((s) => s.config?.transcribeNewEpisodes !== false);
   const transcriptionResults = [];
   let checkedSources = 0;
-  const totalFetchSources = transcriptionSources.length + xSources.length + rssSources.length + redditSources.length + webSources.length + calendarSources.length;
+  const totalFetchSources = transcriptionSources.length + xSources.length + rssSources.length + youtubeSources.length + redditSources.length + webSources.length + calendarSources.length;
   const reportFetchProgress = (label) => {
     checkedSources += 1;
     onProgress?.({
@@ -2370,15 +2371,15 @@ async function fetchSourceCollection({ useRecentCache = false, onProgress } = {}
     }
   }
   const rssResults = [];
-  for (const source of rssSources) {
+  for (const source of [...rssSources, ...youtubeSources]) {
     try {
       const cached = useRecentCache ? recentSourceCache(source) : null;
       rssResults.push(cached ? { sourceId: source.id, sourceName: source.name, ...cached } : { sourceId: source.id, sourceName: source.name, ...(await fetchRssSource(source)) });
     } catch (error) {
-      rssResults.push({ sourceId: source.id, sourceName: source.name, ok: false, error: error.message || "RSS fetch failed" });
-      audit("rss.fetch_failed", "source", source.id, error.message || "RSS fetch failed", {}, "system");
+      rssResults.push({ sourceId: source.id, sourceName: source.name, ok: false, error: error.message || `${source.type} fetch failed` });
+      audit(`${source.type.toLowerCase()}.fetch_failed`, "source", source.id, error.message || `${source.type} fetch failed`, {}, "system");
     } finally {
-      reportFetchProgress(`RSS: ${source.name}`);
+      reportFetchProgress(`${source.type}: ${source.name}`);
     }
   }
   const redditResults = [];
@@ -2428,6 +2429,7 @@ async function fetchSourceCollection({ useRecentCache = false, onProgress } = {}
     podcastSources,
     xSources,
     rssSources,
+    youtubeSources,
     redditSources,
     webSources,
     calendarSources,
@@ -2508,6 +2510,7 @@ async function runSourcePreflight(trigger = "Scheduled source preflight") {
     inserted: collection.itemCount,
     x: collection.xResults.length,
     rss: collection.rssResults.length,
+    youtube: collection.youtubeSources.length,
     reddit: collection.redditResults.length,
     web: collection.webResults.length,
     podcasts: collection.transcriptionResults.length,
@@ -2735,9 +2738,45 @@ const DEFAULT_PODCAST_SOURCES = [
   ["99% Invisible", "https://feeds.simplecast.com/BqbsxVfO", "Design, architecture, and how made things shape the world."],
 ];
 
+const DEFAULT_YOUTUBE_SOURCE_CATALOG_VERSION = "2026-06-18-youtube-catalog-v1";
+const DEFAULT_YOUTUBE_SOURCES = [
+  ["Lex Fridman", "@lexfridman", "UCSHZKyawb77ixDdsGog4iWA", "AI, science, technology, and long-form conversations."],
+  ["The Joe Rogan Experience", "@joerogan", "UCzQUP1qoWDoEbmsQxvdjxgQ", "YouTube channel for Rogan clips and available video posts; full episodes may live elsewhere."],
+  ["The Diary Of A CEO", "@TheDiaryOfACEO", "UCGq-a57w-aPwyi3pW7XLiHw", "Steven Bartlett on business, health, psychology, and performance."],
+  ["Modern Wisdom / Chris Williamson", "@ChrisWillx", "UCIaH-gZIVC432YRjNVvnyCA", "Chris Williamson interviews across psychology, health, culture, and philosophy."],
+  ["The Tim Ferriss Show", "@timferriss", "UCznv7Vf9nBdJYvBagFdAHWw", "Tactics, performance, and wide-ranging guests."],
+  ["Dwarkesh Patel", "@DwarkeshPatel", "UCXl4i9dYBrFOabk0xGmbkRA", "Deep prepared interviews on AI, history, economics, and strategy."],
+  ["John Vervaeke", "@johnvervaeke", "UCpqDUjTsof-kTNpnyWper_Q", "Meaning, cognitive science, dialogues, and Awakening from the Meaning Crisis."],
+  ["The Jim Rutt Show", "@JimRuttShow", "UCw1Sl_jFYRl2gbkBLp7w4lg", "Game B, complexity, sensemaking, and deep systems conversations."],
+  ["Rebel Wisdom", "@RebelWisdom", "UCFQ6Gptuq-sLflbJ4YY3Umw", "Sensemaking and culture; output may be intermittent."],
+  ["Theories of Everything", "@TheoriesofEverything", "UCdWIQh9DGG6uhJk8eyIFl1w", "Curt Jaimungal on physics, consciousness, and deep dialogues."],
+  ["Nonzero", "@Nonzero", "UCeamuoYuBeRnRRbmq5CmjVg", "Robert Wright on evolutionary psychology, meaning, and geopolitics."],
+  ["Eric Weinstein / The Portal", "@EricWeinsteinPhD", "UCR85PW_B_7_Aisx5vNS7Gjw", "Eric Weinstein and Portal-related intermittent deep content."],
+  ["Two Minute Papers", "@TwoMinutePapers", "UCbfYPyITQ-7l4upoX8nvctg", "Regular AI research explainers."],
+  ["Fireship", "@Fireship", "UCsBjURrPoezykLs9EqgamOA", "Fast, frequent developer and technology news."],
+  ["ColdFusion", "@ColdFusion", "UC4QZ_LsYcvcq7qOsOhpAX4A", "Technology and business explainers."],
+  ["Marques Brownlee / MKBHD", "@mkbhd", "UCBJycsmduvYEL83R_U4JriQ", "Consumer technology and product reviews."],
+  ["Yannic Kilcher", "@YannicKilcher", "UCZHmQk67mSJgfCCTn7xBfew", "Technical AI paper breakdowns and commentary."],
+  ["The Plain Bagel", "@ThePlainBagel", "UCFCEuCsyWP0YkP3CZ3Mr01Q", "Evidence-oriented finance and investing explainers."],
+  ["Patrick Boyle", "@PBoyle", "UCASM0cgfkJxQ1ICmRilfHLw", "Markets commentary and financial explainers."],
+  ["Ben Felix / Rational Reminder", "@BenFelixCSI", "UCDXTQ8nWmx_EhZ2v-kp7QxA", "Research-driven investing and Boglehead-aligned finance."],
+  ["Bloomberg Originals", "@business", "UCUMZ7gohGI9HcU9VNsr2FJQ", "Bloomberg documentaries and explainers."],
+  ["Aswath Damodaran", "@AswathDamodaranonValuation", "UCLvnJL8htRR1T9cbSccaoVw", "NYU valuation lectures and market valuation analysis."],
+  ["Veritasium", "@veritasium", "UCHnyfMqiRRG1u-2MsSQLbXA", "Physics and science videos with high production value."],
+  ["Kurzgesagt", "@kurzgesagt", "UCsXVk37bltHxD1rDPwtNM8Q", "Animated science explainers."],
+  ["SciShow", "@SciShow", "UCZYTClx2T1of7BRZ86-8fow", "Frequent broad science news and explainers."],
+  ["Huberman Lab", "@hubermanlab", "UC2D2CMWXMOVWx7giW1n3LIg", "Health and neuroscience content from Andrew Huberman."],
+  ["PBS Space Time", "@pbsspacetime", "UC7_gcs09iThXybpVgjHZ_7g", "Physics and deeper science explainers."],
+  ["Be Smart", "@besmart", "UCH4BNI0-FOK2dMXoFtViWHw", "Accessible science explainers."],
+  ["This Old Tony", "@ThisOldTony", "UC5NO8MgTQKHAWXp6z8Xl7yQ", "Machining, making, and dry workshop humor."],
+  ["Adam Savage's Tested", "@tested", "UCiDJtJKMICpb9B1qf7qjEOA", "Building, making, tools, and problem solving."],
+  ["Stumpy Nubs", "@StumpyNubs", "UCstwpLSByklww1YojZN-KiQ", "Practical woodworking."],
+  ["Mark Rober", "@MarkRober", "UCY1kMZp36IQSyNx_9h4mpCg", "Engineering projects and spectacle."],
+];
+
 function seedSourceRecord({ name, type = "RSS", locator, status = "active", note = "", config }) {
   const t = now();
-  const existing = get("SELECT * FROM sources WHERE name=$name OR locator=$locator", { $name: name, $locator: locator });
+  const existing = get("SELECT * FROM sources WHERE type=$type AND (name=$name OR locator=$locator)", { $type: type, $name: name, $locator: locator });
   const configJson = json(config || (type === "RSS" ? { mode: "feed", feedUrl: locator } : defaultSourceConfig(type)));
   if (existing) {
     run(`UPDATE sources SET name=$name, type=$type, locator=$locator, cadence='Daily', credentials_status=$credentials,
@@ -2836,6 +2875,31 @@ function seedDefaultPodcastSources() {
   });
 }
 
+function youtubeFeedUrl(channelId) {
+  return `https://www.youtube.com/feeds/videos.xml?channel_id=${channelId}`;
+}
+
+function seedDefaultYouTubeSources() {
+  const markerKey = "default_youtube_source_catalog_version";
+  if (get("SELECT value FROM app_state WHERE key=$key", { $key: markerKey })?.value === DEFAULT_YOUTUBE_SOURCE_CATALOG_VERSION) return;
+  for (const [name, handle, channelId, note] of DEFAULT_YOUTUBE_SOURCES) {
+    const feedUrl = youtubeFeedUrl(channelId);
+    seedSourceRecord({
+      name,
+      type: "YouTube",
+      locator: handle,
+      note,
+      config: { mode: "channel", channel: handle, channelId, feedUrl, maxItems: 5 },
+    });
+  }
+  run(`INSERT INTO app_state (key, value, updated_at) VALUES ($key, $value, $t)
+       ON CONFLICT(key) DO UPDATE SET value=$value, updated_at=$t`, {
+    $key: markerKey,
+    $value: DEFAULT_YOUTUBE_SOURCE_CATALOG_VERSION,
+    $t: now(),
+  });
+}
+
 function audit(action, entityType, entityId, note = "", diff = {}, actor = "operator") {
   run(`INSERT INTO audit_logs (id, ts, actor, action, entity_type, entity_id, note, diff_json)
        VALUES ($id, $ts, $actor, $action, $entityType, $entityId, $note, $diff)`, {
@@ -2849,6 +2913,7 @@ function seed() {
   seedDefaultRedditSources();
   seedDefaultXSources();
   seedDefaultPodcastSources();
+  seedDefaultYouTubeSources();
   const count = get("SELECT COUNT(*) AS n FROM lenses").n;
   const t = now();
   if (count === 0) {
