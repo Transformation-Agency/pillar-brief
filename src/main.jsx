@@ -998,12 +998,14 @@ function Sources({ state, mutate }) {
       <section className="panel sources-table-card">
         <div className="table-title-row"><h2>Your sources</h2><label className="table-search"><Icon name="search" /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search sources..." /></label></div>
         {transcribeMessage && <div className="notice source-transcribe-message"><span>{transcribeMessage}</span></div>}
-        {state.sources.length ? <table className="source-table simplified"><thead><tr><th>Source</th><th>Type</th><th>Credentials</th><th></th></tr></thead><tbody>{filteredSources.map((s) => {
+        {state.sources.length ? <table className="source-table simplified"><thead><tr><th>Source</th><th>Type</th><th>Status</th><th>Credentials</th><th></th></tr></thead><tbody>{filteredSources.map((s) => {
         const credential = sourceCredentialLabel(s);
         const displayLocator = sourceDisplayLocator(s);
+        const active = s.status === "active";
         return <tr key={s.id}>
           <td><div className="source-name-cell"><BrandLogo name={s.type} /><div><strong>{s.name}</strong><small title={displayLocator}>{displayLocator}</small></div></div></td>
           <td>{s.type === "Newsletter" ? "Journal / Library" : s.type}</td>
+          <td><button type="button" className={`source-toggle ${active ? "active" : "paused"}`} onClick={() => mutate(`/api/sources/${s.id}`, { status: active ? "paused" : "active" }, "PATCH")} aria-pressed={active}><span></span>{active ? "Active" : "Paused"}</button></td>
           <td><Badge tone={["configured", "not required"].includes(credential) ? "ok" : credential === "optional" ? "muted" : "warn"}>{credential}</Badge></td>
           <td><div className="source-actions"><button type="button" onClick={() => openEditSource(s)}><Icon name="pencil" />Edit</button><button className="danger" type="button" onClick={() => mutate(`/api/sources/${s.id}`, {}, "DELETE")}><Icon name="trash" />Delete</button></div></td>
         </tr>;
@@ -3082,8 +3084,12 @@ function Select({ label, value, onChange, options }) {
   })}</select></label>;
 }
 
+function routeFromHash() {
+  return location.hash.replace(/^#\/?/, "") || "overview";
+}
+
 function App() {
-  const [route, setRoute] = React.useState(location.hash.slice(1) || "overview");
+  const [route, setRoute] = React.useState(routeFromHash());
   const [runState, setRunState] = React.useState({ status: "idle", stepIndex: 0, error: "" });
   const { state, error, mutate, refresh } = useConsoleState();
   const desktopUpdate = useDesktopUpdates();
@@ -3101,7 +3107,7 @@ function App() {
   }, [route]);
   React.useEffect(() => { location.hash = route; }, [route]);
   React.useEffect(() => {
-    const onHash = () => requestRoute(location.hash.slice(1) || "overview");
+    const onHash = () => requestRoute(routeFromHash());
     window.addEventListener("hashchange", onHash);
     return () => window.removeEventListener("hashchange", onHash);
   }, [requestRoute]);

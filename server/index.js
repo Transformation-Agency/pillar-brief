@@ -2062,10 +2062,25 @@ function xBearerToken() {
 }
 
 const GOOGLE_CALENDAR_PROVIDER = "google_calendar";
-const GOOGLE_CALENDAR_DESKTOP_CLIENT_ID = process.env.PILLAR_GOOGLE_CALENDAR_CLIENT_ID || "190790037747-8mou84ivna7taems83u92t7fpfsd12m3.apps.googleusercontent.com";
-// Optional for self-hosted/custom confidential OAuth clients. The packaged
-// desktop app uses Google's installed-app PKCE flow and does not need a secret.
-const GOOGLE_CALENDAR_CLIENT_SECRET = process.env.PILLAR_GOOGLE_CALENDAR_CLIENT_SECRET || "";
+function googleCalendarLocalOAuthConfig() {
+  const file = String(process.env.PILLAR_GOOGLE_CALENDAR_CLIENT_JSON || "").trim();
+  if (!file) return { clientId: "", clientSecret: "" };
+  try {
+    const parsed = JSON.parse(fs.readFileSync(path.resolve(file), "utf8"));
+    const config = parsed.web || parsed.installed || parsed;
+    return {
+      clientId: String(config?.client_id || "").trim(),
+      clientSecret: String(config?.client_secret || "").trim(),
+    };
+  } catch (error) {
+    console.error("Could not read PILLAR_GOOGLE_CALENDAR_CLIENT_JSON:", error.message || error);
+    return { clientId: "", clientSecret: "" };
+  }
+}
+const GOOGLE_CALENDAR_LOCAL_OAUTH = googleCalendarLocalOAuthConfig();
+const GOOGLE_CALENDAR_DESKTOP_CLIENT_ID = process.env.PILLAR_GOOGLE_CALENDAR_CLIENT_ID || GOOGLE_CALENDAR_LOCAL_OAUTH.clientId || "190790037747-8mou84ivna7taems83u92t7fpfsd12m3.apps.googleusercontent.com";
+const GOOGLE_CALENDAR_CLIENT_SECRET = process.env.PILLAR_GOOGLE_CALENDAR_CLIENT_SECRET || GOOGLE_CALENDAR_LOCAL_OAUTH.clientSecret || "";
+const GOOGLE_CALENDAR_REDIRECT_URI = process.env.PILLAR_GOOGLE_CALENDAR_REDIRECT_URI || "";
 const GOOGLE_CALENDAR_SCOPES = [
   "https://www.googleapis.com/auth/calendar.events.readonly",
   "https://www.googleapis.com/auth/calendar.calendarlist.readonly",
@@ -2083,6 +2098,7 @@ function googleCalendarCredential() {
 }
 
 function googleCalendarRedirectUri(req) {
+  if (GOOGLE_CALENDAR_REDIRECT_URI) return GOOGLE_CALENDAR_REDIRECT_URI;
   return `${req.protocol}://${req.get("host")}/api/google-calendar/oauth/callback`;
 }
 
@@ -2570,6 +2586,94 @@ function startBriefDeliveryScheduler() {
   timer.unref?.();
 }
 
+const DEFAULT_RSS_SOURCE_CATALOG_VERSION = "2026-06-18-rss-catalog-v1";
+const DEFAULT_RSS_SOURCES = [
+  ["Reuters via Google News", "https://news.google.com/rss/search?q=when:24h+allinurl:reuters.com&hl=en-US&gl=US&ceid=US:en", "Wire service workaround: Reuters has no native public RSS; Google News search limited to last 24h."],
+  ["Associated Press via Google News", "https://news.google.com/rss/search?q=when:24h+allinurl:apnews.com&hl=en-US&gl=US&ceid=US:en", "Wire service workaround: AP via Google News search limited to last 24h."],
+  ["AFP via Google News", "https://news.google.com/rss/search?q=when:24h+allinurl:afp.com&hl=en-US&gl=US&ceid=US:en", "Wire service workaround: AFP has no general public feed; Google News search limited to last 24h."],
+  ["Bloomberg Markets", "https://feeds.bloomberg.com/markets/news.rss", "Bloomberg markets feed; metered/full text may be gated."],
+  ["Bloomberg Technology", "https://feeds.bloomberg.com/technology/news.rss", "Bloomberg technology feed; metered/full text may be gated."],
+  ["Bloomberg Politics", "https://feeds.bloomberg.com/politics/news.rss", "Bloomberg politics feed; metered/full text may be gated."],
+  ["BBC World News", "https://feeds.bbci.co.uk/news/world/rss.xml", "BBC World RSS feed."],
+  ["New York Times Home Page", "https://rss.nytimes.com/services/xml/rss/nyt/HomePage.xml", "NYT homepage RSS; subscription may gate full text."],
+  ["New York Times World", "https://rss.nytimes.com/services/xml/rss/nyt/World.xml", "NYT World RSS; subscription may gate full text."],
+  ["Washington Post World", "https://feeds.washingtonpost.com/rss/world", "Washington Post world RSS; subscription may gate full text."],
+  ["Wall Street Journal World News", "https://feeds.content.dowjones.io/public/rss/RSSWorldNews", "WSJ world RSS; subscription may gate full text."],
+  ["Wall Street Journal Business", "https://feeds.content.dowjones.io/public/rss/WSJcomUSBusiness", "WSJ business RSS; subscription may gate full text."],
+  ["The Guardian World", "https://www.theguardian.com/world/rss", "Guardian world RSS feed."],
+  ["The Economist Latest", "https://www.economist.com/latest/rss.xml", "Economist latest RSS; subscription may gate full text."],
+  ["NPR News", "https://feeds.npr.org/1001/rss.xml", "NPR News RSS feed."],
+  ["PBS NewsHour", "https://www.pbs.org/newshour/feeds/rss/headlines", "PBS NewsHour headlines RSS feed."],
+  ["Financial Times Home", "https://www.ft.com/rss/home", "FT home RSS; subscription may gate full text."],
+  ["Christian Science Monitor", "https://rss.csmonitor.com/feeds/all", "Christian Science Monitor all RSS feed."],
+  ["The Atlantic", "https://www.theatlantic.com/feed/all/", "The Atlantic all feed; metered/full text may be gated."],
+  ["Politico Politics News", "https://rss.politico.com/politics-news.xml", "Politico politics news RSS feed."],
+  ["The Hill", "https://thehill.com/rss/syndicator/19110", "The Hill syndicator RSS feed."],
+  ["Reason", "https://reason.com/feed/", "Reason RSS feed."],
+  ["National Review", "https://www.nationalreview.com/feed/", "National Review RSS; metered/full text may be gated."],
+  ["The Dispatch", "https://thedispatch.com/feed/", "The Dispatch RSS; most full text may be paid."],
+  ["Vox", "https://www.vox.com/rss/index.xml", "Vox RSS feed."],
+  ["NEJM Current Issue", "https://www.nejm.org/action/showFeed?type=etoc&feed=rss&jc=nejm", "NEJM current issue RSS; full text may be gated and NEJM may block some scrapers."],
+  ["The Lancet", "https://www.thelancet.com/rssfeed/lancet_current.xml", "Lancet current issue RSS; registration/full text may be gated."],
+  ["JAMA Current Issue", "https://jamanetwork.com/rss/site_3/67.xml", "JAMA current issue RSS; full text may be gated."],
+  ["BMJ Recent", "https://www.bmj.com/rss/recent.xml", "BMJ recent RSS; per-section feeds available at bmj.com/rss."],
+  ["Nature", "https://www.nature.com/nature.rss", "Nature RSS; full text may be gated."],
+  ["Science News", "https://www.science.org/rss/news_current.xml", "Science / AAAS current news RSS."],
+  ["Cell", "https://www.cell.com/cell/current.rss", "Cell current issue RSS; full text may be gated."],
+  ["PNAS Latest", "https://www.pnas.org/action/showFeed?type=etoc&feed=rss&jc=pnas", "PNAS RSS; full text may depend on embargo/access."],
+  ["Cochrane Library", "https://www.cochranelibrary.com/web/cochrane/rss", "Cochrane Library RSS/summaries; full reviews may be gated."],
+  ["CDC Newsroom", "https://tools.cdc.gov/api/v2/resources/media/132608.rss", "CDC Newsroom RSS feed."],
+  ["WHO News", "https://www.who.int/rss-feeds/news-english.xml", "WHO English news RSS feed."],
+  ["NIH News Releases", "https://www.nih.gov/news-events/news-releases/feed.xml", "NIH news releases RSS feed."],
+  ["Scientific American", "https://www.scientificamerican.com/feed/", "Scientific American feed; metered/full text may be gated."],
+  ["STAT News", "https://www.statnews.com/feed/", "STAT News feed; STAT+ full text may be gated."],
+  ["MIT Technology Review", "https://www.technologyreview.com/feed/", "MIT Technology Review feed; metered/full text may be gated."],
+  ["FactCheck.org", "https://www.factcheck.org/feed/", "FactCheck.org RSS feed."],
+  ["PolitiFact", "https://www.politifact.com/rss/all/", "PolitiFact all RSS feed."],
+  ["Snopes", "https://www.snopes.com/feed/", "Snopes RSS feed."],
+];
+
+function seedSourceRecord({ name, type = "RSS", locator, status = "active", note = "", config }) {
+  const t = now();
+  const existing = get("SELECT * FROM sources WHERE name=$name OR locator=$locator", { $name: name, $locator: locator });
+  const configJson = json(config || (type === "RSS" ? { mode: "feed", feedUrl: locator } : defaultSourceConfig(type)));
+  if (existing) {
+    run(`UPDATE sources SET name=$name, type=$type, locator=$locator, cadence='Daily', credentials_status=$credentials,
+         note=$note, config_json=$config, updated_at=$t WHERE id=$id`, {
+      $id: existing.id, $name: name, $type: type, $locator: locator, $credentials: sourceCredentialStatus(type), $note: note, $config: configJson, $t: t,
+    });
+    return existing.id;
+  }
+  const sourceId = id("src");
+  run(`INSERT INTO sources (id, name, type, locator, cadence, status, approval_status, credentials_status, note, config_json, created_at, updated_at)
+       VALUES ($id, $name, $type, $locator, 'Daily', $status, 'approved', $credentials, $note, $config, $t, $t)`, {
+    $id: sourceId, $name: name, $type: type, $locator: locator, $status: status, $credentials: sourceCredentialStatus(type), $note: note, $config: configJson, $t: t,
+  });
+  return sourceId;
+}
+
+function seedDefaultRssSources() {
+  const markerKey = "default_rss_source_catalog_version";
+  if (get("SELECT value FROM app_state WHERE key=$key", { $key: markerKey })?.value === DEFAULT_RSS_SOURCE_CATALOG_VERSION) return;
+  for (const [name, feedUrl, note] of DEFAULT_RSS_SOURCES) {
+    seedSourceRecord({ name, locator: feedUrl, note, config: { mode: "feed", feedUrl } });
+  }
+  seedSourceRecord({
+    name: "PubMed Custom RSS",
+    type: "Web",
+    locator: "https://pubmed.ncbi.nlm.nih.gov/",
+    status: "paused",
+    note: "Paused placeholder: sign into NCBI, run a PubMed search, click Create RSS, then replace this URL.",
+    config: { mode: "page", url: "https://pubmed.ncbi.nlm.nih.gov/" },
+  });
+  run(`INSERT INTO app_state (key, value, updated_at) VALUES ($key, $value, $t)
+       ON CONFLICT(key) DO UPDATE SET value=$value, updated_at=$t`, {
+    $key: markerKey,
+    $value: DEFAULT_RSS_SOURCE_CATALOG_VERSION,
+    $t: now(),
+  });
+}
+
 function audit(action, entityType, entityId, note = "", diff = {}, actor = "operator") {
   run(`INSERT INTO audit_logs (id, ts, actor, action, entity_type, entity_id, note, diff_json)
        VALUES ($id, $ts, $actor, $action, $entityType, $entityId, $note, $diff)`, {
@@ -2579,6 +2683,7 @@ function audit(action, entityType, entityId, note = "", diff = {}, actor = "oper
 }
 
 function seed() {
+  seedDefaultRssSources();
   const count = get("SELECT COUNT(*) AS n FROM lenses").n;
   const t = now();
   if (count === 0) {
@@ -4523,6 +4628,11 @@ app.post("/api/google-calendar/oauth/start", (req, res) => {
     code_challenge_method: "S256",
   })}`;
   audit("google_calendar.oauth_started", "connector", GOOGLE_CALENDAR_PROVIDER, "Started Google Calendar OAuth consent", { redirectUri }, "system");
+  if (isDesktop && process.platform === "darwin") {
+    execFile("/usr/bin/open", ["-a", "Google Chrome", authUrl], (error) => {
+      if (error) console.error("Failed to open Google Calendar OAuth in Chrome:", error.message || error);
+    });
+  }
   res.json({ authUrl, redirectUri, state: state() });
 });
 
@@ -4578,6 +4688,11 @@ app.get("/api/google-calendar/oauth/callback", async (req, res) => {
     audit("google_calendar.oauth_failed", "connector", GOOGLE_CALENDAR_PROVIDER, message, {}, "system");
     return render("Google Calendar was not connected", message);
   }
+});
+
+app.get("/api/drive/auth/callback", (req, res) => {
+  const query = new URLSearchParams(req.query).toString();
+  res.redirect(302, `http://127.0.0.1:${port}/api/google-calendar/oauth/callback${query ? `?${query}` : ""}`);
 });
 
 app.post("/api/google-calendar/test", async (req, res) => {
@@ -4748,6 +4863,7 @@ if (process.env.NODE_ENV === "production") {
 
 const port = Number(process.env.PORT || 5173);
 const host = process.env.HOST || "127.0.0.1";
+const googleCalendarCallbackPort = GOOGLE_CALENDAR_REDIRECT_URI ? Number(new URL(GOOGLE_CALENDAR_REDIRECT_URI).port || 80) : 0;
 const server = app.listen(port, host);
 server.on("listening", () => {
   startSourcePreflightScheduler();
@@ -4755,6 +4871,15 @@ server.on("listening", () => {
   console.log(`Pillar Brief running at http://${host}:${port}`);
   console.log(`SQLite database: ${dbPath}`);
 });
+if (googleCalendarCallbackPort && googleCalendarCallbackPort !== port) {
+  const callbackServer = app.listen(googleCalendarCallbackPort, "127.0.0.1");
+  callbackServer.on("listening", () => {
+    console.log(`Google Calendar OAuth callback bridge running at http://localhost:${googleCalendarCallbackPort}`);
+  });
+  callbackServer.on("error", (error) => {
+    console.error(`Google Calendar OAuth callback bridge failed on port ${googleCalendarCallbackPort}:`, error);
+  });
+}
 let takeoverAttempts = 0;
 server.on("error", (error) => {
   // An orphaned backend from a previous session can hold the port. Ask it to
