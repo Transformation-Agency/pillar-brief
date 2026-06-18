@@ -1851,6 +1851,32 @@ function redditRssUrlForSource(source) {
 
 async function fetchRedditSource(source) {
   const config = source.config || {};
+  if (redditCredential().enabled && redditCredential().data.clientId) {
+    const payload = await fetchRedditOAuthJson(redditOAuthPathForSource(source));
+    const parsedPosts = (payload.data?.children || []).map((child) => child.data).filter(Boolean);
+    const posts = parsedPosts.filter((post) => publishedToday(post.created_utc ? new Date(post.created_utc * 1000).toISOString() : null));
+    let inserted = 0;
+    for (const post of posts) {
+      const body = [post.selftext, post.url && !String(post.url).includes("reddit.com") ? `Link: ${post.url}` : ""].filter(Boolean).join("\n");
+      const saved = saveNormalizedItem({
+        source,
+        stableId: post.name || post.id,
+        canonicalUrl: `https://www.reddit.com${post.permalink || ""}`,
+        title: post.title,
+        body,
+        publishedAt: post.created_utc ? new Date(post.created_utc * 1000).toISOString() : null,
+        relevanceScore: scoreText(`${post.title} ${body}`, config.keywords || config.query),
+        risingScore: Math.min(1, Math.log10(Number(post.score || 0) + Number(post.num_comments || 0) + 1) / 4),
+      });
+      if (saved.inserted) inserted += 1;
+    }
+    const fetchedAt = now();
+    const nextConfig = { ...config, lastFetchedAt: fetchedAt, lastFetchedCount: parsedPosts.length, lastFetchedTodayCount: posts.length, lastInsertedCount: inserted, lastFetchMode: "oauth-api" };
+    run("UPDATE sources SET config_json=$config, updated_at=$t WHERE id=$id", { $id: source.id, $config: json(nextConfig), $t: fetchedAt });
+    run("UPDATE connector_credentials SET last_checked_at=$t, last_error='', updated_at=$t WHERE provider=$provider", { $provider: REDDIT_PROVIDER, $t: fetchedAt });
+    audit("reddit.fetched", "source", source.id, `Fetched ${parsedPosts.length} Reddit OAuth posts; ${posts.length} published today; inserted ${inserted}`, { fetched: parsedPosts.length, today: posts.length, inserted, mode: "oauth-api" }, "system");
+    return { ok: true, skipped: false, seen: parsedPosts.length, today: posts.length, inserted, mode: "oauth-api" };
+  }
   const response = await fetchWithTimeout(redditUrlForSource(source), { headers: { "User-Agent": "PillarBrief/0.1 by operator" } });
   if (response.status === 403 || response.status === 429) {
     const rss = await fetchWithTimeout(redditRssUrlForSource(source), { headers: { "User-Agent": "PillarBrief/0.1 by operator" } });
@@ -2060,6 +2086,127 @@ async function fetchGoogleCalendarSource(source) {
 function xBearerToken() {
   const row = get("SELECT * FROM connector_credentials WHERE provider='x'");
   return row?.enabled && row.api_key ? row.api_key : "";
+}
+
+const REDDIT_PROVIDER = "reddit";
+function redditCredential() {
+  const row = get("SELECT * FROM connector_credentials WHERE provider=$provider", { $provider: REDDIT_PROVIDER });
+  const data = parse(row?.api_key, {});
+  const envClientId = process.env.REDDIT_CLIENT_ID || process.env.PILLAR_REDDIT_CLIENT_ID || "";
+  const envClientSecret = process.env.REDDIT_CLIENT_SECRET || process.env.PILLAR_REDDIT_CLIENT_SECRET || "";
+  return {
+    row,
+    enabled: !!row?.enabled || !!envClientId,
+    data: {
+      ...data,
+      clientId: data.clientId || envClientId,
+      clientSecret: data.clientSecret || envClientSecret,
+      grantType: data.grantType || (data.clientSecret || envClientSecret ? "client_credentials" : "installed_client"),
+      deviceId: data.deviceId || "DO_NOT_TRACK_THIS_DEVICE",
+    },
+  };
+}
+
+function redditPublicConnector({ row, data, enabled } = {}) {
+  const source = data || parse(row?.api_key, {});
+  const hasClientId = !!(source.clientId || process.env.REDDIT_CLIENT_ID || process.env.PILLAR_REDDIT_CLIENT_ID);
+  const isEnabled = !!enabled || !!process.env.REDDIT_CLIENT_ID || !!process.env.PILLAR_REDDIT_CLIENT_ID;
+  return {
+    provider: REDDIT_PROVIDER,
+    enabled: isEnabled,
+    apiKeySaved: hasClientId,
+    credentialStatus: hasClientId ? "saved" : "missing",
+    status: isEnabled && hasClientId ? "ready" : "pending credentials",
+    grantType: source.grantType || (source.clientSecret ? "client_credentials" : "installed_client"),
+    tokenExpiresAt: source.expiresAt || null,
+    lastCheckedAt: row?.last_checked_at || null,
+    lastError: row?.last_error || null,
+    updatedAt: row?.updated_at || null,
+  };
+}
+
+function saveRedditCredential(data = {}, { enabled = true, error = "" } = {}) {
+  const t = now();
+  run(`INSERT INTO connector_credentials (provider, api_key, enabled, last_error, updated_at)
+       VALUES ($provider, $apiKey, $enabled, $err, $t)
+       ON CONFLICT(provider) DO UPDATE SET api_key=$apiKey, enabled=$enabled, last_error=$err, updated_at=$t`, {
+    $provider: REDDIT_PROVIDER,
+    $apiKey: json(data),
+    $enabled: enabled ? 1 : 0,
+    $err: error,
+    $t: t,
+  });
+}
+
+async function refreshRedditAccessToken({ force = false } = {}) {
+  const credential = redditCredential();
+  const data = credential.data;
+  if (!credential.enabled) throw new Error("Reddit connector is not enabled.");
+  if (!data.clientId) throw new Error("Reddit client ID is missing.");
+  if (!force && data.accessToken && Number(data.expiresAt || 0) > Date.now() + 60000) return data.accessToken;
+  const grantType = data.grantType === "installed_client" ? "installed_client" : "client_credentials";
+  const body = new URLSearchParams();
+  if (grantType === "installed_client") {
+    body.set("grant_type", "https://oauth.reddit.com/grants/installed_client");
+    body.set("device_id", String(data.deviceId || "DO_NOT_TRACK_THIS_DEVICE"));
+  } else {
+    body.set("grant_type", "client_credentials");
+  }
+  const basic = Buffer.from(`${data.clientId}:${data.clientSecret || ""}`).toString("base64");
+  const response = await fetchWithTimeout("https://www.reddit.com/api/v1/access_token", {
+    method: "POST",
+    headers: {
+      Authorization: `Basic ${basic}`,
+      "Content-Type": "application/x-www-form-urlencoded",
+      "User-Agent": "PillarBrief/0.1 by operator",
+    },
+    body,
+  }, 15000);
+  if (!response.ok) throw new Error(`Reddit OAuth failed: ${response.status} ${response.statusText}`);
+  const token = await response.json();
+  if (!token.access_token) throw new Error("Reddit OAuth did not return an access token.");
+  const nextData = {
+    ...data,
+    grantType,
+    accessToken: token.access_token,
+    tokenType: token.token_type || "bearer",
+    scope: token.scope || data.scope || "",
+    expiresAt: Date.now() + Number(token.expires_in || 3600) * 1000,
+  };
+  saveRedditCredential(nextData, { enabled: true });
+  return nextData.accessToken;
+}
+
+async function fetchRedditOAuthJson(path) {
+  const token = await refreshRedditAccessToken();
+  const response = await fetchWithTimeout(`https://oauth.reddit.com${path}`, {
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "User-Agent": "PillarBrief/0.1 by operator",
+    },
+  }, 15000);
+  if (!response.ok) {
+    const reset = response.headers.get("x-ratelimit-reset");
+    const suffix = response.status === 429 && reset ? `; rate limit reset in ${reset}s` : "";
+    throw new Error(`Reddit OAuth fetch failed: ${response.status} ${response.statusText}${suffix}`);
+  }
+  return response.json();
+}
+
+function redditOAuthPathForSource(source) {
+  const config = source.config || {};
+  const limit = Math.max(5, Math.min(25, Number(config.maxItems || 10)));
+  if (config.mode === "search") {
+    const params = new URLSearchParams({ q: config.query || source.locator, sort: config.sort || "new", t: "day", limit: String(limit), raw_json: "1" });
+    return `/search.json?${params}`;
+  }
+  if (config.mode === "user") {
+    const user = String(config.username || source.locator || "").replace(/^u\//, "").replace(/^@/, "");
+    return `/user/${encodeURIComponent(user)}/submitted.json?limit=${limit}&raw_json=1`;
+  }
+  const subreddit = String(config.subreddits || source.locator || "").split(",")[0].trim().replace(/^r\//, "").replace(/^subreddits:/, "");
+  const sort = ["hot", "top"].includes(config.sort) ? config.sort : "new";
+  return `/r/${encodeURIComponent(subreddit)}/${sort}.json?limit=${limit}&raw_json=1`;
 }
 
 const GOOGLE_CALENDAR_PROVIDER = "google_calendar";
@@ -2955,6 +3102,9 @@ function seed() {
   if (!get("SELECT provider FROM connector_credentials WHERE provider = 'elevenlabs'")) {
     run("INSERT INTO connector_credentials (provider, updated_at) VALUES ('elevenlabs', $t)", { $t: t });
   }
+  if (!get("SELECT provider FROM connector_credentials WHERE provider = $provider", { $provider: REDDIT_PROVIDER })) {
+    run("INSERT INTO connector_credentials (provider, updated_at) VALUES ($provider, $t)", { $provider: REDDIT_PROVIDER, $t: t });
+  }
   if (!get("SELECT provider FROM connector_credentials WHERE provider = $provider", { $provider: GOOGLE_CALENDAR_PROVIDER })) {
     run("INSERT INTO connector_credentials (provider, updated_at) VALUES ($provider, $t)", { $provider: GOOGLE_CALENDAR_PROVIDER, $t: t });
   }
@@ -3106,6 +3256,7 @@ function connectorSettings() {
   const rows = all("SELECT * FROM connector_credentials ORDER BY provider");
   const connectors = Object.fromEntries(rows.map((r) => {
     if (r.provider === GOOGLE_CALENDAR_PROVIDER) return [r.provider, googleCalendarPublicConnector({ row: r, data: parse(r.api_key, {}), enabled: !!r.enabled })];
+    if (r.provider === REDDIT_PROVIDER) return [r.provider, redditPublicConnector({ row: r, data: parse(r.api_key, {}), enabled: !!r.enabled })];
     const hasKey = !!r.api_key;
     return [r.provider, {
       provider: r.provider,
@@ -3139,6 +3290,7 @@ function connectorSettings() {
       lastError: null,
       updatedAt: null,
     },
+    reddit: connectors[REDDIT_PROVIDER] || redditPublicConnector({ row: null, data: {}, enabled: false }),
     googleCalendar: connectors[GOOGLE_CALENDAR_PROVIDER] || googleCalendarPublicConnector({ row: null, data: {}, enabled: false }),
   };
 }
@@ -5488,9 +5640,27 @@ app.post("/api/google-calendar/disconnect", (req, res) => {
 
 app.patch("/api/connectors/:provider", (req, res) => {
   const provider = String(req.params.provider || "").toLowerCase();
-  if (!["x", "elevenlabs"].includes(provider)) return res.status(404).json({ error: "Connector not found" });
+  if (!["x", "elevenlabs", REDDIT_PROVIDER].includes(provider)) return res.status(404).json({ error: "Connector not found" });
   const b = req.body || {};
   const current = get("SELECT * FROM connector_credentials WHERE provider=$provider", { $provider: provider }) || {};
+  if (provider === REDDIT_PROVIDER) {
+    const currentData = parse(current.api_key, {});
+    const nextData = {
+      ...currentData,
+      clientId: String(b.clientId || currentData.clientId || "").trim(),
+      clientSecret: String(b.clientSecret === undefined ? currentData.clientSecret || "" : b.clientSecret || "").trim(),
+      grantType: b.grantType === "installed_client" ? "installed_client" : "client_credentials",
+      deviceId: String(b.deviceId || currentData.deviceId || "DO_NOT_TRACK_THIS_DEVICE").trim() || "DO_NOT_TRACK_THIS_DEVICE",
+    };
+    if (b.clientId || b.clientSecret !== undefined || b.grantType || b.deviceId) {
+      nextData.accessToken = "";
+      nextData.expiresAt = 0;
+    }
+    const missing = b.enabled && !nextData.clientId;
+    saveRedditCredential(nextData, { enabled: b.enabled ? true : false, error: missing ? "Missing Reddit client ID" : "" });
+    audit("connector.settings_updated", "connector", provider, b.enabled ? "Reddit connector enabled/updated" : "Reddit connector disabled/updated");
+    return res.json(state());
+  }
   const apiKey = b.apiKey ? b.apiKey : current.api_key || "";
   const missing = b.enabled && !apiKey;
   run(`INSERT INTO connector_credentials (provider, api_key, enabled, last_error, updated_at)
@@ -5504,6 +5674,31 @@ app.patch("/api/connectors/:provider", (req, res) => {
   });
   audit("connector.settings_updated", "connector", provider, b.enabled ? `${provider} connector enabled/updated` : `${provider} connector disabled/updated`);
   res.json(state());
+});
+
+app.post("/api/reddit/test", async (req, res) => {
+  try {
+    if (req.body?.clientId || req.body?.clientSecret !== undefined || req.body?.grantType || req.body?.deviceId) {
+      const current = redditCredential().data;
+      saveRedditCredential({
+        ...current,
+        clientId: String(req.body.clientId || current.clientId || "").trim(),
+        clientSecret: String(req.body.clientSecret === undefined ? current.clientSecret || "" : req.body.clientSecret || "").trim(),
+        grantType: req.body.grantType === "installed_client" ? "installed_client" : "client_credentials",
+        deviceId: String(req.body.deviceId || current.deviceId || "DO_NOT_TRACK_THIS_DEVICE").trim() || "DO_NOT_TRACK_THIS_DEVICE",
+        accessToken: "",
+        expiresAt: 0,
+      }, { enabled: true });
+    }
+    await refreshRedditAccessToken({ force: true });
+    const payload = await fetchRedditOAuthJson("/r/news/hot.json?limit=1&raw_json=1");
+    const count = payload?.data?.children?.length || 0;
+    run("UPDATE connector_credentials SET last_checked_at=$t, last_error='', updated_at=$t WHERE provider=$provider", { $provider: REDDIT_PROVIDER, $t: now() });
+    res.json({ ok: true, fetched: count, connector: redditPublicConnector({ row: get("SELECT * FROM connector_credentials WHERE provider=$provider", { $provider: REDDIT_PROVIDER }), data: redditCredential().data, enabled: true }), state: state() });
+  } catch (error) {
+    run("UPDATE connector_credentials SET last_checked_at=$t, last_error=$err, updated_at=$t WHERE provider=$provider", { $provider: REDDIT_PROVIDER, $t: now(), $err: error.message || "Reddit test failed" });
+    res.status(400).json({ error: error.message || "Reddit test failed", state: state() });
+  }
 });
 
 app.post("/api/tts/voices", async (req, res) => {

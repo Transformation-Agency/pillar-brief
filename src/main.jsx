@@ -2610,6 +2610,8 @@ function Settings({ state, mutate, refresh, desktopUpdate }) {
   const [editingProvider, setEditingProvider] = React.useState("");
   const [telegramModal, setTelegramModal] = React.useState(false);
   const [xModal, setXModal] = React.useState(false);
+  const [redditModal, setRedditModal] = React.useState(false);
+  const [redditMessage, setRedditMessage] = React.useState("");
   const [googleCalendarModal, setGoogleCalendarModal] = React.useState(false);
   const [googleCalendarSelection, setGoogleCalendarSelection] = React.useState(state.connectors?.googleCalendar?.selectedCalendarIds || ["primary"]);
   const [googleCalendarSelectionDirty, setGoogleCalendarSelectionDirty] = React.useState(false);
@@ -2626,6 +2628,13 @@ function Settings({ state, mutate, refresh, desktopUpdate }) {
   const [xConnector, setXConnector] = React.useState({
     enabled: true,
     apiKey: "",
+  });
+  const [redditConnector, setRedditConnector] = React.useState({
+    enabled: true,
+    clientId: "",
+    clientSecret: "",
+    grantType: "client_credentials",
+    deviceId: "DO_NOT_TRACK_THIS_DEVICE",
   });
   const [telegramForm, setTelegramForm] = React.useState({ enabled: state.telegram.enabled, botToken: state.telegram.botToken, chatId: state.telegram.chatId, allowedUsers: state.telegram.allowedUsers.join(", ") });
   const [detecting, setDetecting] = React.useState(false);
@@ -2655,6 +2664,15 @@ function Settings({ state, mutate, refresh, desktopUpdate }) {
     });
   }, [state.connectors]);
   React.useEffect(() => {
+    setRedditConnector((current) => ({
+      enabled: true,
+      clientId: "",
+      clientSecret: "",
+      grantType: state.connectors?.reddit?.grantType || current.grantType || "client_credentials",
+      deviceId: current.deviceId || "DO_NOT_TRACK_THIS_DEVICE",
+    }));
+  }, [state.connectors?.reddit?.grantType]);
+  React.useEffect(() => {
     setTelegramForm({ enabled: state.telegram.enabled, botToken: state.telegram.botToken, chatId: state.telegram.chatId, allowedUsers: state.telegram.allowedUsers.join(", ") });
   }, [state.telegram]);
   React.useEffect(() => {
@@ -2674,6 +2692,30 @@ function Settings({ state, mutate, refresh, desktopUpdate }) {
   const saveXConnector = (e) => {
     e.preventDefault();
     mutate("/api/connectors/x", { ...xConnector, enabled: true }, "PATCH").then(() => setXModal(false));
+  };
+  const saveRedditConnector = async (e) => {
+    e.preventDefault();
+    setRedditMessage("");
+    try {
+      await mutate("/api/connectors/reddit", { ...redditConnector, enabled: true }, "PATCH");
+      setRedditConnector({ ...redditConnector, clientId: "", clientSecret: "" });
+      setRedditMessage("Reddit OAuth settings saved.");
+      setRedditModal(false);
+    } catch (error) {
+      setRedditMessage(error.message || "Could not save Reddit connector.");
+    }
+  };
+  const testRedditConnector = async () => {
+    setRedditMessage("");
+    try {
+      await api("/api/reddit/test", { method: "POST", body: JSON.stringify(redditConnector) });
+      setRedditConnector({ ...redditConnector, clientId: "", clientSecret: "" });
+      setRedditMessage("Reddit OAuth API is ready.");
+      await refresh();
+    } catch (error) {
+      setRedditMessage(error.message || "Reddit OAuth test failed.");
+      await refresh();
+    }
   };
   const startGoogleCalendarOAuth = async (e) => {
     e.preventDefault();
@@ -2787,13 +2829,14 @@ function Settings({ state, mutate, refresh, desktopUpdate }) {
   }, [editingProvider, model.apiKey, detectModels, state.model.credentialStatus, state.model.provider, state.model.providerCredentials]);
   const modelConnected = state.model.status === "ready";
   const xConnected = state.connectors?.x?.status === "ready";
+  const redditConnected = state.connectors?.reddit?.status === "ready";
   const googleCalendarConnected = state.connectors?.googleCalendar?.status === "ready";
   const telegramConnected = state.telegram?.enabled && state.telegram?.chatId && state.telegram?.botToken;
   const providerRows = modelProviderRows;
   const researchRows = [
     { service: "X (Twitter)", sub: "Search and monitor posts", type: "Social", logo: "X", status: xConnected ? "Connected" : "Needs token", connected: xConnected, action: "x" },
     { service: "Google Calendar", sub: "Add today's agenda to briefs", type: "Calendar", logo: "Calendar", status: googleCalendarConnected ? "Connected" : state.connectors?.googleCalendar?.status === "needs consent" ? "Needs consent" : "Needs OAuth", connected: googleCalendarConnected, action: "googleCalendar" },
-    { service: "Reddit", sub: "Monitor subreddits and posts", type: "Social", logo: "Reddit", status: "Available", connected: true },
+    { service: "Reddit", sub: "Monitor subreddits and posts", type: "Social", logo: "Reddit", status: redditConnected ? "Connected" : "Needs OAuth", connected: redditConnected, action: "reddit" },
     { service: "Web Search", sub: "General web search", type: "Search", logo: "Web", status: "Available", connected: true },
     { service: "YouTube", sub: "Channels, uploads, and transcripts", type: "Video", logo: "YouTube", status: "Available", connected: true },
   ];
@@ -2940,7 +2983,7 @@ function Settings({ state, mutate, refresh, desktopUpdate }) {
             <span>{row.type}</span>
             <Badge tone={row.connected ? "ok" : "muted"}>{row.status}</Badge>
             <span>{row.connected ? "Ready" : "-"}</span>
-            <Button type="button" icon="pencil" onClick={() => row.action === "x" ? setXModal(true) : row.action === "googleCalendar" ? setGoogleCalendarModal(true) : null}>{row.action === "x" || row.action === "googleCalendar" ? "Edit" : "View"}</Button>
+            <Button type="button" icon="pencil" onClick={() => row.action === "x" ? setXModal(true) : row.action === "googleCalendar" ? setGoogleCalendarModal(true) : row.action === "reddit" ? setRedditModal(true) : null}>{row.action === "x" || row.action === "googleCalendar" || row.action === "reddit" ? "Edit" : "View"}</Button>
           </div>)}
         </div>
       </section>
@@ -3014,7 +3057,7 @@ function Settings({ state, mutate, refresh, desktopUpdate }) {
           <button type="button" onClick={() => { setConnectorModal(false); setXModal(true); }}><BrandLogo name="X" /><strong>X search API</strong><span>Official bearer-token recent search.</span></button>
           <button type="button" onClick={() => { setConnectorModal(false); setGoogleCalendarModal(true); }}><BrandLogo name="Calendar" /><strong>Google Calendar</strong><span>Read today's agenda into each brief.</span></button>
           <button type="button" onClick={() => setConnectorModal(false)}><Icon name="volume" /><strong>ElevenLabs audio</strong><span>Use the Audio Briefs settings below.</span></button>
-          <button type="button" onClick={() => setConnectorModal(false)}><BrandLogo name="Reddit" /><strong>Public research connectors</strong><span>Reddit, RSS, web, YouTube, and podcast sources.</span></button>
+          <button type="button" onClick={() => { setConnectorModal(false); setRedditModal(true); }}><BrandLogo name="Reddit" /><strong>Reddit OAuth API</strong><span>Official app-only OAuth for subreddit sources.</span></button>
         </div>
         <p className="hint">Most research connectors are added as Sources. Provider credentials live on this Settings page.</p>
       </div>
@@ -3042,6 +3085,21 @@ function Settings({ state, mutate, refresh, desktopUpdate }) {
         <div className="modal-head"><div><h2>X search API</h2><p>Add or replace the official bearer token used for X search.</p></div><button type="button" onClick={() => setXModal(false)}><Icon name="x" /></button></div>
         <Field label="Bearer token" type="password" value={xConnector.apiKey} onChange={(apiKey) => setXConnector({ ...xConnector, apiKey })} placeholder={state.connectors?.x?.apiKeySaved ? "Saved. Paste a new token to replace it." : "Paste X bearer token"} />
         <div className="modal-actions"><Button type="button" onClick={() => setXModal(false)}>Cancel</Button><Button icon="save" kind="primary">Save X API</Button></div>
+      </form>
+    </div>}
+    {redditModal && <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setRedditModal(false); }}>
+      <form className="modal-card connector-modal form" onSubmit={saveRedditConnector}>
+        <div className="modal-head"><div><h2>Reddit OAuth API</h2><p>Use an official Reddit app token for subreddit sources instead of public RSS/JSON endpoints.</p></div><button type="button" onClick={() => setRedditModal(false)}><Icon name="x" /></button></div>
+        <div className={`notice ${redditConnected ? "" : "notice-warn"}`}>
+          <strong>{redditConnected ? "Reddit OAuth ready" : "Reddit OAuth not configured"}</strong>
+          <span>{state.connectors?.reddit?.lastError || redditMessage || "Create a Reddit app, then paste the client ID and optional client secret here."}</span>
+        </div>
+        <Select label="Grant type" value={redditConnector.grantType} onChange={(grantType) => setRedditConnector({ ...redditConnector, grantType })} options={["client_credentials", "installed_client"]} />
+        <Field label="Client ID" value={redditConnector.clientId} onChange={(clientId) => setRedditConnector({ ...redditConnector, clientId })} placeholder={state.connectors?.reddit?.apiKeySaved ? "Saved. Paste a new client ID to replace it." : "Paste Reddit app client ID"} />
+        <Field label="Client secret" type="password" value={redditConnector.clientSecret} onChange={(clientSecret) => setRedditConnector({ ...redditConnector, clientSecret })} placeholder={state.connectors?.reddit?.apiKeySaved ? "Saved if configured. Paste to replace it." : "Required for script/web app; blank for installed app"} />
+        {redditConnector.grantType === "installed_client" && <Field label="Device ID" value={redditConnector.deviceId} onChange={(deviceId) => setRedditConnector({ ...redditConnector, deviceId })} placeholder="DO_NOT_TRACK_THIS_DEVICE" />}
+        {redditMessage && <p className={redditMessage.includes("ready") || redditMessage.includes("saved") ? "ok-text" : "warn-text"}>{redditMessage}</p>}
+        <div className="modal-actions"><Button type="button" onClick={() => setRedditModal(false)}>Cancel</Button><Button type="button" icon="run" onClick={testRedditConnector}>Test</Button><Button icon="save" kind="primary">Save Reddit OAuth</Button></div>
       </form>
     </div>}
     {googleCalendarModal && <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) closeGoogleCalendarModal(); }}>
