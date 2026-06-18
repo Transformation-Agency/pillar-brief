@@ -2667,6 +2667,40 @@ const DEFAULT_REDDIT_SOURCES = [
   ["r/medicine", "medicine", "Clinician-oriented medicine news and discussion."],
 ];
 
+const DEFAULT_X_SOURCE_CATALOG_VERSION = "2026-06-18-x-catalog-v1";
+const DEFAULT_X_SOURCES = [
+  ["X: Breaking news", "\"breaking news\" lang:en", "Evergreen global breaking-news search."],
+  ["X: #BreakingNews", "#BreakingNews lang:en", "Breaking-news hashtag search."],
+  ["X: World news", "\"world news\" lang:en", "Global world-news search."],
+  ["X: Reuters", "from:Reuters lang:en", "Reuters account search for wire coverage."],
+  ["X: Associated Press", "from:AP lang:en", "Associated Press account search for wire coverage."],
+  ["X: BBC Breaking", "from:BBCBreaking lang:en", "BBC Breaking account search."],
+  ["X: Geopolitics", "geopolitics lang:en", "Geopolitics search."],
+  ["X: US politics", "\"US politics\" lang:en", "US national politics search."],
+  ["X: AP news filter", "from:AP filter:news lang:en", "Associated Press posts constrained to news-type results where supported."],
+  ["X: Congress or White House", "(Congress OR \"White House\") lang:en", "Congress and White House search."],
+  ["X: Supreme Court", "\"Supreme Court\" lang:en", "Supreme Court search."],
+  ["X: AI popular", "AI min_faves:500 lang:en", "AI search with popularity floor to cut noise."],
+  ["X: Artificial intelligence", "\"artificial intelligence\" lang:en", "Artificial intelligence search."],
+  ["X: #AI", "#AI lang:en", "AI hashtag search."],
+  ["X: Tech news", "\"tech news\" lang:en", "Technology news search."],
+  ["X: The Verge", "from:TheVerge lang:en", "The Verge account search."],
+  ["X: Markets", "markets lang:en", "Markets search."],
+  ["X: Stock market", "\"stock market\" lang:en", "Stock market search."],
+  ["X: #fintech", "#fintech lang:en", "Fintech hashtag search."],
+  ["X: Federal Reserve or rate cut", "(\"Federal Reserve\" OR \"rate cut\") lang:en", "Federal Reserve and rate-cut search."],
+  ["X: Bloomberg Business", "from:business lang:en", "Bloomberg Business account search."],
+  ["X: #science", "#science lang:en", "Science hashtag search."],
+  ["X: New study popular", "\"new study\" min_faves:1000 lang:en", "New study search with high popularity floor."],
+  ["X: Public health", "\"public health\" lang:en", "Public health search."],
+  ["X: #MedTwitter", "#MedTwitter lang:en", "Medical community hashtag search."],
+  ["X: #DIY", "#DIY lang:en", "DIY hashtag search."],
+  ["X: #woodworking", "#woodworking lang:en", "Woodworking hashtag search."],
+  ["X: #art", "#art lang:en", "Art hashtag search."],
+  ["X: Denver", "(Denver OR #Denver) lang:en", "Denver local search."],
+  ["X: Colorado news", "(\"Colorado news\" OR from:denverpost) lang:en", "Colorado news and Denver Post account search."],
+];
+
 function seedSourceRecord({ name, type = "RSS", locator, status = "active", note = "", config }) {
   const t = now();
   const existing = get("SELECT * FROM sources WHERE name=$name OR locator=$locator", { $name: name, $locator: locator });
@@ -2728,6 +2762,26 @@ function seedDefaultRedditSources() {
   });
 }
 
+function seedDefaultXSources() {
+  const markerKey = "default_x_source_catalog_version";
+  if (get("SELECT value FROM app_state WHERE key=$key", { $key: markerKey })?.value === DEFAULT_X_SOURCE_CATALOG_VERSION) return;
+  for (const [name, query, note] of DEFAULT_X_SOURCES) {
+    seedSourceRecord({
+      name,
+      type: "X",
+      locator: `search:${query}`,
+      note,
+      config: { mode: "search", query, quickMode: true, quickModeLocked: true },
+    });
+  }
+  run(`INSERT INTO app_state (key, value, updated_at) VALUES ($key, $value, $t)
+       ON CONFLICT(key) DO UPDATE SET value=$value, updated_at=$t`, {
+    $key: markerKey,
+    $value: DEFAULT_X_SOURCE_CATALOG_VERSION,
+    $t: now(),
+  });
+}
+
 function audit(action, entityType, entityId, note = "", diff = {}, actor = "operator") {
   run(`INSERT INTO audit_logs (id, ts, actor, action, entity_type, entity_id, note, diff_json)
        VALUES ($id, $ts, $actor, $action, $entityType, $entityId, $note, $diff)`, {
@@ -2739,6 +2793,7 @@ function audit(action, entityType, entityId, note = "", diff = {}, actor = "oper
 function seed() {
   seedDefaultRssSources();
   seedDefaultRedditSources();
+  seedDefaultXSources();
   const count = get("SELECT COUNT(*) AS n FROM lenses").n;
   const t = now();
   if (count === 0) {
