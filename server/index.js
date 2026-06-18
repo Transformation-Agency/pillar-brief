@@ -2701,6 +2701,40 @@ const DEFAULT_X_SOURCES = [
   ["X: Colorado news", "(\"Colorado news\" OR from:denverpost) lang:en", "Colorado news and Denver Post account search."],
 ];
 
+const DEFAULT_PODCAST_SOURCE_CATALOG_VERSION = "2026-06-18-podcast-catalog-v1";
+const DEFAULT_PODCAST_SOURCES = [
+  ["The Jim Rutt Show", "https://jimruttshow.blubrry.net/feed/podcast/", "Game B, complexity, sensemaking, and deep systems conversations."],
+  ["Voices with Vervaeke", "https://rss.libsyn.com/shows/480795/destinations/4089831.xml", "John Vervaeke's dialogues on meaning, cognition, and wisdom."],
+  ["Theories of Everything", "https://feeds.megaphone.fm/TOE4643226064", "Curt Jaimungal on physics, consciousness, philosophy, and deep ideas."],
+  ["The Portal / Eric Weinstein", "https://feed.cdnstream1.com/zjb/feed/download/d9/8a/71/d98a71ac-d1a3-4d92-ab64-64b4ff3192d1.xml", "Intermittent deep conversations with Eric Weinstein."],
+  ["Nonzero", "https://api.substack.com/feed/podcast/17302.rss", "Robert Wright on evolution, meaning, politics, and geopolitics."],
+  ["Conversations with Tyler", "https://rss.libsyn.com/shows/137081/destinations/850607.xml", "Tyler Cowen interviews across economics, culture, politics, and ideas."],
+  ["The Diary Of A CEO", "https://rss2.flightcast.com/xmsftuzjjykcmqwolaqn6mdn", "Steven Bartlett on business, psychology, health, and performance."],
+  ["Hidden Forces", "https://rss.libsyn.com/shows/91567/destinations/457899.xml", "Demetri Kofinas on macro, systems, and civilization-scale questions."],
+  ["Lex Fridman Podcast", "https://lexfridman.com/feed/podcast/", "Long-form AI, science, philosophy, and wide-ranging interviews."],
+  ["The Joe Rogan Experience", "https://feeds.megaphone.fm/GLT1412515089", "Wide-ranging long-form interviews."],
+  ["Modern Wisdom", "https://feeds.megaphone.fm/SIXMSB5088139739", "Chris Williamson on psychology, health, culture, philosophy, and performance."],
+  ["The Tim Ferriss Show", "https://rss.art19.com/tim-ferriss-show", "Tactics, performance, business, and long-form interviews."],
+  ["Dwarkesh Podcast", "https://apple.dwarkesh-podcast.workers.dev/feed.rss", "Deep, well-prepared interviews on AI, economics, science, and strategy."],
+  ["Honestly with Bari Weiss", "https://feeds.megaphone.fm/RSV2347142881", "Interview-driven culture and politics from The Free Press."],
+  ["Hard Fork", "https://feeds.simplecast.com/6HKOhNgS", "NYT technology news and analysis."],
+  ["Lenny's Podcast", "https://api.substack.com/feed/podcast/10845.rss", "Product, growth, startups, and technology building."],
+  ["The TWIML AI Podcast", "https://feeds.megaphone.fm/MLN2155636147", "Technical machine learning and AI conversations."],
+  ["The a16z Show", "https://feeds.simplecast.com/JGE3yC0V", "Technology, startups, and venture-backed industry analysis."],
+  ["Acquired", "https://feeds.transistor.fm/acquired", "Deep company and business histories."],
+  ["The Rational Reminder", "https://rss.libsyn.com/shows/127327/destinations/763774.xml", "Evidence-based investing with Ben Felix and team."],
+  ["Odd Lots", "https://www.omnycontent.com/d/playlist/e73c998e-6e60-432f-8610-ae210140c5b1/8a94442e-5a74-4fa2-8b8d-ae27003a8d6b/982f5071-765c-403d-969d-ae27003a8d83/podcast.rss", "Bloomberg markets and unusual corners of the economy."],
+  ["Animal Spirits", "https://feeds.megaphone.fm/TCP6464651487", "Approachable markets and investing discussion."],
+  ["We Study Billionaires", "https://feeds.megaphone.fm/PPLLC8974708240", "The Investor's Podcast Network on investing and business."],
+  ["Planet Money", "https://feeds.npr.org/510289/podcast.xml", "NPR economics stories and explainers."],
+  ["Huberman Lab", "https://feeds.megaphone.fm/hubermanlab", "Neuroscience, health, behavior, and performance."],
+  ["Radiolab", "https://feeds.simplecast.com/EmVW7VGp", "Science, big ideas, and narrative audio."],
+  ["The Peter Attia Drive", "https://rss.libsyn.com/shows/121729/destinations/713489.xml", "Longevity, medicine, and health deep dives."],
+  ["Science Vs", "https://feeds.megaphone.fm/sciencevs", "Evidence checks on popular science and health claims."],
+  ["Sean Carroll's Mindscape", "https://rss.libsyn.com/shows/604590/destinations/5264190.xml", "Physics, philosophy, science, society, and ideas."],
+  ["99% Invisible", "https://feeds.simplecast.com/BqbsxVfO", "Design, architecture, and how made things shape the world."],
+];
+
 function seedSourceRecord({ name, type = "RSS", locator, status = "active", note = "", config }) {
   const t = now();
   const existing = get("SELECT * FROM sources WHERE name=$name OR locator=$locator", { $name: name, $locator: locator });
@@ -2782,6 +2816,26 @@ function seedDefaultXSources() {
   });
 }
 
+function seedDefaultPodcastSources() {
+  const markerKey = "default_podcast_source_catalog_version";
+  if (get("SELECT value FROM app_state WHERE key=$key", { $key: markerKey })?.value === DEFAULT_PODCAST_SOURCE_CATALOG_VERSION) return;
+  for (const [name, feedUrl, note] of DEFAULT_PODCAST_SOURCES) {
+    seedSourceRecord({
+      name,
+      type: "Podcast",
+      locator: feedUrl,
+      note,
+      config: { mode: "feed", feedUrl, transcribeNewEpisodes: false, maxItems: 5 },
+    });
+  }
+  run(`INSERT INTO app_state (key, value, updated_at) VALUES ($key, $value, $t)
+       ON CONFLICT(key) DO UPDATE SET value=$value, updated_at=$t`, {
+    $key: markerKey,
+    $value: DEFAULT_PODCAST_SOURCE_CATALOG_VERSION,
+    $t: now(),
+  });
+}
+
 function audit(action, entityType, entityId, note = "", diff = {}, actor = "operator") {
   run(`INSERT INTO audit_logs (id, ts, actor, action, entity_type, entity_id, note, diff_json)
        VALUES ($id, $ts, $actor, $action, $entityType, $entityId, $note, $diff)`, {
@@ -2794,6 +2848,7 @@ function seed() {
   seedDefaultRssSources();
   seedDefaultRedditSources();
   seedDefaultXSources();
+  seedDefaultPodcastSources();
   const count = get("SELECT COUNT(*) AS n FROM lenses").n;
   const t = now();
   if (count === 0) {
