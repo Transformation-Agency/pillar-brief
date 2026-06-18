@@ -257,7 +257,7 @@ function migrate() {
 }
 
 const now = () => new Date().toISOString();
-const defaultOpenAiModel = "gpt-5.4-mini";
+const defaultOpenAiModel = "gpt-4.1";
 const modelProviders = ["openai", "anthropic", "openrouter", "gemini", "xai", "custom"];
 const id = (prefix) => `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
 const json = (value) => JSON.stringify(value ?? null);
@@ -1267,19 +1267,20 @@ async function callTextModel({ system, prompt }) {
       return (payload.candidates?.[0]?.content?.parts || []).map((part) => part.text || "").join("\n").trim();
     }
 
+    const chatBody = {
+      model: modelRow.model,
+      response_format: { type: "json_object" },
+      messages: [
+        { role: "system", content: system },
+        { role: "user", content: prompt },
+      ],
+    };
+    if (!/^gpt-5|^chat-/i.test(String(modelRow.model || ""))) chatBody.temperature = 0.2;
     const response = await fetch(`${baseUrl}/chat/completions`, {
       method: "POST",
       headers: { "content-type": "application/json", authorization: `Bearer ${apiKey}` },
       signal: controller.signal,
-      body: JSON.stringify({
-        model: modelRow.model,
-        temperature: 0.2,
-        response_format: { type: "json_object" },
-        messages: [
-          { role: "system", content: system },
-          { role: "user", content: prompt },
-        ],
-      }),
+      body: JSON.stringify(chatBody),
     });
     if (!response.ok) throw new Error(`Model call failed: ${response.status} ${response.statusText} ${(await response.text()).slice(0, 240)}`);
     const payload = await response.json();
