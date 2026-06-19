@@ -1,6 +1,6 @@
 use std::{
     fs::OpenOptions,
-    io::Write,
+    io::{Read, Write},
     net::{SocketAddr, TcpStream},
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
@@ -16,9 +16,10 @@ use tauri::{
     Manager, RunEvent, WebviewUrl, WebviewWindowBuilder,
 };
 
-const BACKEND_PORT: u16 = 42817;
-const BACKEND_URL: &str = "http://127.0.0.1:42817";
+const BACKEND_PORT: u16 = 42818;
+const BACKEND_URL: &str = "http://127.0.0.1:42818";
 const SIDECAR_PREFIX: &str = "pillar-brief-backend";
+const BACKEND_IDENTITY_MARKER: &str = "com.pillarbrief.desktop";
 
 struct BackendProcess(Mutex<Option<Child>>);
 
@@ -84,16 +85,46 @@ fn find_sidecar(app: &tauri::App) -> Option<PathBuf> {
     dirs.into_iter().find_map(|dir| find_sidecar_in(&dir))
 }
 
+fn local_backend_request(port: u16, request: &str, timeout: Duration) -> Option<String> {
+    let addr = SocketAddr::from(([127, 0, 0, 1], port));
+    let mut stream = TcpStream::connect_timeout(&addr, Duration::from_millis(250)).ok()?;
+    let _ = stream.set_read_timeout(Some(timeout));
+    let _ = stream.set_write_timeout(Some(Duration::from_millis(250)));
+    stream.write_all(request.as_bytes()).ok()?;
+    let mut response = String::new();
+    stream.read_to_string(&mut response).ok()?;
+    Some(response)
+}
+
+fn request_backend_shutdown(port: u16) {
+    let request = format!(
+        "POST /api/runtime/shutdown HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+    );
+    let _ = local_backend_request(port, &request, Duration::from_millis(500));
+}
+
+fn backend_has_pillar_brief_identity(port: u16) -> bool {
+    let request =
+        format!("GET /api/state HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n");
+    local_backend_request(port, &request, Duration::from_secs(2))
+        .map(|body| body.contains(BACKEND_IDENTITY_MARKER) && body.contains("\"Pillar Brief\""))
+        .unwrap_or(false)
+}
+
 fn wait_for_backend(port: u16, timeout: Duration) -> Result<(), String> {
     let addr = SocketAddr::from(([127, 0, 0, 1], port));
     let started = Instant::now();
     while started.elapsed() < timeout {
-        if TcpStream::connect_timeout(&addr, Duration::from_millis(250)).is_ok() {
+        if TcpStream::connect_timeout(&addr, Duration::from_millis(250)).is_ok()
+            && backend_has_pillar_brief_identity(port)
+        {
             return Ok(());
         }
         thread::sleep(Duration::from_millis(250));
     }
-    Err(format!("Backend did not become ready on port {port}"))
+    Err(format!(
+        "Pillar Brief backend did not become ready on port {port} with the expected app identity"
+    ))
 }
 
 fn spawn_backend(app: &tauri::App) -> Result<Child, String> {
@@ -336,10 +367,10 @@ fn request_notification_authorization() {
         return;
     }
     let center = UNUserNotificationCenter::currentNotificationCenter();
-    let options =
-        UNAuthorizationOptions::Alert | UNAuthorizationOptions::Sound | UNAuthorizationOptions::Badge;
-    let handler =
-        StackBlock::new(|_granted: objc2::runtime::Bool, _error: *mut NSError| {}).copy();
+    let options = UNAuthorizationOptions::Alert
+        | UNAuthorizationOptions::Sound
+        | UNAuthorizationOptions::Badge;
+    let handler = StackBlock::new(|_granted: objc2::runtime::Bool, _error: *mut NSError| {}).copy();
     center.requestAuthorizationWithOptions_completionHandler(options, &handler);
 }
 
@@ -492,6 +523,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![desktop_app_version])
         .manage(BackendProcess(Mutex::new(None)))
         .setup(|app| {
+            request_backend_shutdown(BACKEND_PORT);
+            thread::sleep(Duration::from_millis(300));
             let backend_result = spawn_backend(app).and_then(|mut child| {
                 if let Err(error) = wait_for_backend(BACKEND_PORT, Duration::from_secs(20)) {
                     let _ = child.kill();

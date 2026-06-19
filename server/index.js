@@ -12,16 +12,22 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, "..");
 const packagedAppMatch = __dirname.match(/\/Applications\/([^/]+\.app)\//);
 const packagedAppName = packagedAppMatch ? packagedAppMatch[1].replace(/\.app$/, "") : "";
+const bundleIdentifier = process.env.__CFBundleIdentifier || "";
+const xpcServiceName = process.env.XPC_SERVICE_NAME || "";
+const isPillarBriefBundle =
+  packagedAppName === "Pillar Brief"
+  || bundleIdentifier === "com.pillarbrief.desktop"
+  || /com\.pillarbrief\.desktop/i.test(xpcServiceName);
 const appMode = process.env.PILLAR_APP_MODE || (process.env.PILLAR_DESKTOP || packagedAppName ? "desktop" : "web");
 const isDesktop = appMode === "desktop";
 function defaultDesktopDataDir() {
   if (process.platform !== "darwin") return path.join(root, "data");
-  if (packagedAppName === "Pillar Brief") return path.join(process.env.HOME || root, "Library", "Application Support", "com.pillarbrief.desktop");
+  if (isPillarBriefBundle) return path.join(process.env.HOME || root, "Library", "Application Support", "com.pillarbrief.desktop");
   return path.join(root, "data");
 }
 function resolveDataDir() {
   const configured = process.env.PILLAR_DATA_DIR ? path.resolve(process.env.PILLAR_DATA_DIR) : "";
-  if (packagedAppName === "Pillar Brief" && /com\.pillartime\.desktop/i.test(configured)) return defaultDesktopDataDir();
+  if (isPillarBriefBundle) return defaultDesktopDataDir();
   return configured || (isDesktop ? defaultDesktopDataDir() : path.join(root, "data"));
 }
 const dataDir = resolveDataDir();
@@ -2222,25 +2228,42 @@ function redditOAuthPathForSource(source) {
 }
 
 const GOOGLE_CALENDAR_PROVIDER = "google_calendar";
-function googleCalendarLocalOAuthConfig() {
-  const file = String(process.env.PILLAR_GOOGLE_CALENDAR_CLIENT_JSON || "").trim();
-  if (!file) return { clientId: "", clientSecret: "" };
-  try {
-    const parsed = JSON.parse(fs.readFileSync(path.resolve(file), "utf8"));
-    const config = parsed.web || parsed.installed || parsed;
-    return {
-      clientId: String(config?.client_id || "").trim(),
-      clientSecret: String(config?.client_secret || "").trim(),
-    };
-  } catch (error) {
-    console.error("Could not read PILLAR_GOOGLE_CALENDAR_CLIENT_JSON:", error.message || error);
-    return { clientId: "", clientSecret: "" };
+function googleCalendarClientJsonCandidates() {
+  const explicit = String(process.env.PILLAR_GOOGLE_CALENDAR_CLIENT_JSON || "").trim();
+  const candidates = explicit ? [explicit] : [];
+  if (process.platform === "darwin") {
+    const downloadsDir = path.join(process.env.HOME || "", "Downloads");
+    try {
+      const downloadCandidates = fs.readdirSync(downloadsDir)
+        .filter((name) => /^client_secret_.*\.json$/i.test(name))
+        .map((name) => path.join(downloadsDir, name))
+        .sort();
+      candidates.push(...downloadCandidates);
+    } catch {
+      // Downloads may not exist in hosted/server deployments.
+    }
   }
+  return candidates;
+}
+function googleCalendarLocalOAuthConfig() {
+  for (const file of googleCalendarClientJsonCandidates()) {
+    try {
+      if (!fs.existsSync(path.resolve(file))) continue;
+      const parsed = JSON.parse(fs.readFileSync(path.resolve(file), "utf8"));
+      const config = parsed.web || parsed.installed || parsed;
+      const clientId = String(config?.client_id || "").trim();
+      const clientSecret = String(config?.client_secret || "").trim();
+      if (clientId && clientSecret) return { clientId, clientSecret };
+    } catch (error) {
+      console.error(`Could not read Google Calendar OAuth client JSON at ${file}:`, error.message || error);
+    }
+  }
+  return { clientId: "", clientSecret: "" };
 }
 const GOOGLE_CALENDAR_LOCAL_OAUTH = googleCalendarLocalOAuthConfig();
 const GOOGLE_CALENDAR_DESKTOP_CLIENT_ID = process.env.PILLAR_GOOGLE_CALENDAR_CLIENT_ID || GOOGLE_CALENDAR_LOCAL_OAUTH.clientId || "190790037747-8mou84ivna7taems83u92t7fpfsd12m3.apps.googleusercontent.com";
 const GOOGLE_CALENDAR_CLIENT_SECRET = process.env.PILLAR_GOOGLE_CALENDAR_CLIENT_SECRET || GOOGLE_CALENDAR_LOCAL_OAUTH.clientSecret || "";
-const GOOGLE_CALENDAR_REDIRECT_URI = process.env.PILLAR_GOOGLE_CALENDAR_REDIRECT_URI || "";
+const GOOGLE_CALENDAR_REDIRECT_URI = process.env.PILLAR_GOOGLE_CALENDAR_REDIRECT_URI || (GOOGLE_CALENDAR_LOCAL_OAUTH.clientId ? "http://localhost:3000/api/drive/auth/callback" : "");
 const GOOGLE_CALENDAR_SCOPES = [
   "https://www.googleapis.com/auth/calendar.events.readonly",
   "https://www.googleapis.com/auth/calendar.calendarlist.readonly",
@@ -3377,7 +3400,7 @@ function workflowProgressSteps({ activeKey = "fetch", completed = new Set(), out
 }
 
 function state() {
-  return { sources: sources(), lenses: lenses(), councils: councils(), documents: documents(), workflowRuns: workflowRuns(), approvals: approvals(), auditLogs: audits(), telegram: telegramSettings(), model: modelSettings(), tts: ttsSettings(), connectors: connectorSettings(), briefConfig: briefConfig(), onboarding: onboardingState(), runtime: { mode: appMode, isDesktop, dataDir, workflowSteps: workflowPlan() } };
+  return { sources: sources(), lenses: lenses(), councils: councils(), documents: documents(), workflowRuns: workflowRuns(), approvals: approvals(), auditLogs: audits(), telegram: telegramSettings(), model: modelSettings(), tts: ttsSettings(), connectors: connectorSettings(), briefConfig: briefConfig(), onboarding: onboardingState(), runtime: { mode: appMode, isDesktop, dataDir, packagedAppName, bundleIdentifier, isPillarBriefBundle, workflowSteps: workflowPlan() } };
 }
 function briefConfig() {
   const r = get("SELECT * FROM brief_config WHERE id = 1");
