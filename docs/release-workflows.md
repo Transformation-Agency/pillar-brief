@@ -36,8 +36,8 @@ The macOS workflow runs on:
 For a public release:
 
 ```bash
-git tag v0.1.3
-git push origin v0.1.3
+git tag v0.1.6
+git push origin v0.1.6
 ```
 
 On a tag, the workflow uploads these release assets:
@@ -55,9 +55,13 @@ On a tag, the workflow uploads these release assets:
 
 The GitHub release body is read from
 `docs/release-notes/<tag>.md`, for example
-`docs/release-notes/v0.1.3.md`.
+`docs/release-notes/v0.1.6.md`.
 
 Both macOS jobs run on Apple Silicon GitHub runners. The Intel job cross-compiles the Rust app, downloads the official darwin-x64 Node sidecar, builds a static x86_64 `whisper-cli`, and bundles the tiny English model from `vendor/whisper/models/ggml-tiny.en.bin`.
+
+Each macOS job also runs release preflight checks and verifies the final app
+bundle contains the backend sidecar, audio converter, `whisper-cli`, and tiny
+English model before notarization.
 
 ## Windows Secrets
 
@@ -78,6 +82,11 @@ On a tag, the workflow uploads these release assets:
 - `Pillar.Brief_<version>_x64-setup.exe.sig`
 - `Pillar.Brief_<version>_x64-setup.exe.sha256`
 
+The Windows workflow builds a static Windows `whisper-cli.exe` in CI, prepares
+the Node backend sidecar and Rust audio converter sidecar, then verifies those
+bundle inputs exist before uploading the signed installer and updater
+signature.
+
 ## Updater Manifest
 
 The updater manifest workflow waits for the macOS and Windows updater assets,
@@ -90,6 +99,9 @@ https://github.com/Transformation-Agency/pillar-brief/releases/latest/download/l
 
 Only the public updater key is committed in `src-tauri/tauri.conf.json`; the
 private signing key stays in GitHub Actions secrets.
+
+The manifest workflow validates that `latest.json` contains signed entries for
+`darwin-aarch64`, `darwin-x86_64`, and `windows-x86_64` before uploading it.
 
 ## Local Equivalent
 

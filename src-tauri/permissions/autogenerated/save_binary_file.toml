@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-save-binary-file"
+description = "Enables the save_binary_file command without any pre-configured scope."
+commands.allow = ["save_binary_file"]
+
+[[permission]]
+identifier = "deny-save-binary-file"
+description = "Denies the save_binary_file command without any pre-configured scope."
+commands.deny = ["save_binary_file"]

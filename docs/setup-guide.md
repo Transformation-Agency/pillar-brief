@@ -42,8 +42,7 @@ Basic web, RSS, Reddit, YouTube, and podcast source setup can work without extra
 
 - X API access: https://developer.x.com/en/portal/dashboard
 - X API getting access docs: https://docs.x.com/x-api/getting-started/getting-access
-- FFmpeg install page: https://formulae.brew.sh/formula/ffmpeg
-- Homebrew install page: https://brew.sh
+- Podcast audio converter override: set `PILLAR_AUDIO_CONVERT_PATH` for self-hosted/server installs when the converter is not on `PATH`.
 
 If a suggested source requires credentials you do not want to add during onboarding, skip that prerequisite and Pillar Brief will remove that source from the first-run setup.
 

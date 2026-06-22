@@ -1,7 +1,7 @@
 import express from "express";
 import fs from "node:fs";
 import path from "node:path";
-import { execFile, spawn } from "node:child_process";
+import { execFile } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { pipeline } from "node:stream/promises";
 import { fileURLToPath } from "node:url";
@@ -204,6 +204,9 @@ function migrate() {
       product_name TEXT NOT NULL DEFAULT 'Pillar Brief',
       audience_context TEXT NOT NULL DEFAULT '',
       voice_rules TEXT NOT NULL DEFAULT '',
+      publishing_preset TEXT NOT NULL DEFAULT 'standard',
+      publishing_style_prompt TEXT NOT NULL DEFAULT '',
+      length_guidance TEXT NOT NULL DEFAULT '',
       delivery_frequency TEXT NOT NULL DEFAULT 'Daily',
       delivery_time TEXT NOT NULL DEFAULT '08:00',
       delivery_timezone TEXT NOT NULL DEFAULT 'America/Denver',
@@ -252,6 +255,9 @@ function migrate() {
   }
   const briefColumns = db.prepare("PRAGMA table_info(brief_config)").all().map((c) => c.name);
   if (!briefColumns.includes("delivery_frequency")) db.exec("ALTER TABLE brief_config ADD COLUMN delivery_frequency TEXT NOT NULL DEFAULT 'Daily';");
+  if (!briefColumns.includes("publishing_preset")) db.exec("ALTER TABLE brief_config ADD COLUMN publishing_preset TEXT NOT NULL DEFAULT 'standard';");
+  if (!briefColumns.includes("publishing_style_prompt")) db.exec("ALTER TABLE brief_config ADD COLUMN publishing_style_prompt TEXT NOT NULL DEFAULT '';");
+  if (!briefColumns.includes("length_guidance")) db.exec("ALTER TABLE brief_config ADD COLUMN length_guidance TEXT NOT NULL DEFAULT '';");
   if (!briefColumns.includes("delivery_time")) db.exec("ALTER TABLE brief_config ADD COLUMN delivery_time TEXT NOT NULL DEFAULT '08:00';");
   if (!briefColumns.includes("delivery_timezone")) db.exec("ALTER TABLE brief_config ADD COLUMN delivery_timezone TEXT NOT NULL DEFAULT 'America/Denver';");
   if (!briefColumns.includes("delivery_day")) db.exec("ALTER TABLE brief_config ADD COLUMN delivery_day TEXT NOT NULL DEFAULT 'Monday';");
@@ -278,6 +284,29 @@ function migrate() {
 const now = () => new Date().toISOString();
 const defaultOpenAiModel = "gpt-5.4-mini";
 const modelProviders = ["openai", "anthropic", "openrouter", "gemini", "xai", "custom"];
+const publishingPresets = {
+  concise: {
+    publishingStylePrompt: "Write as a tight executive brief: skimmable, direct, source-backed, and mostly bullets with only the minimum context needed.",
+    lengthGuidance: "Concise: aim for 500-800 words total. Use 1-2 short paragraphs for the executive read, 2-4 bullets per section, and keep only the highest-signal items.",
+  },
+  standard: {
+    publishingStylePrompt: "Write as a practical daily intelligence memo: clear sections, plain-English context, useful implications, and enough detail to make decisions without wandering.",
+    lengthGuidance: "Standard: aim for 900-1,400 words total. Use 2-3 short paragraphs for the executive read and 3-6 bullets per section.",
+  },
+  detailed: {
+    publishingStylePrompt: "Write as a detailed analytical brief: fuller context, careful explanation, tradeoffs, implications, open questions, and source grounding for a deeper read.",
+    lengthGuidance: "Detailed: aim for 1,600-2,400 words total. Include more supporting context and 5-8 bullets per section when the source material supports it.",
+  },
+};
+const defaultPublishingPreset = "standard";
+
+function publishingPresetDefaults(preset = defaultPublishingPreset) {
+  return publishingPresets[preset] || publishingPresets[defaultPublishingPreset];
+}
+
+function sanitizePublishingPreset(value = defaultPublishingPreset) {
+  return ["concise", "standard", "detailed", "custom"].includes(value) ? value : defaultPublishingPreset;
+}
 const id = (prefix) => `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
 const json = (value) => JSON.stringify(value ?? null);
 const parse = (value, fallback) => {
@@ -351,7 +380,6 @@ const all = (sql, params = {}) => db.prepare(sql).all(params);
 const get = (sql, params = {}) => db.prepare(sql).get(params);
 const addMinutes = (minutes) => new Date(Date.now() + minutes * 60 * 1000).toISOString();
 const randomCode = () => Math.random().toString(36).replace(/[^a-z0-9]/g, "").slice(2, 8).toUpperCase().padEnd(6, "X");
-const candidateBrewPaths = ["/opt/homebrew/bin/brew", "/usr/local/bin/brew"];
 const candidateFfmpegPaths = ["/opt/homebrew/bin/ffmpeg", "/usr/local/bin/ffmpeg", "/usr/bin/ffmpeg"];
 const defaultWhisperModel = process.env.WHISPER_MODEL_NAME || "tiny.en";
 const whisperModelFile = `ggml-${defaultWhisperModel}.bin`;
@@ -359,6 +387,16 @@ const whisperModelUrl = process.env.WHISPER_MODEL_URL || `https://huggingface.co
 
 function platformBinaryName(baseName) {
   return process.platform === "win32" ? `${baseName}.exe` : baseName;
+}
+
+function localTargetTriple() {
+  if (process.env.PILLAR_TARGET_TRIPLE) return process.env.PILLAR_TARGET_TRIPLE;
+  if (process.env.CARGO_BUILD_TARGET) return process.env.CARGO_BUILD_TARGET;
+  const arch = process.arch === "arm64" ? "aarch64" : process.arch === "x64" ? "x86_64" : process.arch;
+  if (process.platform === "darwin") return `${arch}-apple-darwin`;
+  if (process.platform === "win32") return `${arch}-pc-windows-msvc`;
+  if (process.platform === "linux") return `${arch}-unknown-linux-gnu`;
+  return "";
 }
 
 function whisperBinaryCandidates() {
@@ -381,6 +419,29 @@ function whisperBinaryCandidates() {
     ...names.map((name) => path.join(dir, name)),
     ...names.map((name) => path.join(dir, "bin", name)),
   ]);
+}
+
+function audioConvertCandidates() {
+  const name = platformBinaryName("pillar-audio-convert");
+  const triple = localTargetTriple();
+  const suffixedName = triple ? platformBinaryName(`pillar-audio-convert-${triple}`) : "";
+  const roots = [
+    process.env.PILLAR_AUDIO_CONVERT_DIR,
+    path.dirname(process.execPath || ""),
+    path.join(root, "src-tauri", "binaries"),
+    dataDir,
+    root,
+    path.join(root, "vendor"),
+    path.join(root, ".."),
+    process.env.PILLAR_BACKEND_DIR ? path.join(process.env.PILLAR_BACKEND_DIR, "..") : "",
+    process.env.PILLAR_BACKEND_DIR ? process.env.PILLAR_BACKEND_DIR : "",
+  ].filter(Boolean);
+  return roots.flatMap((dir) => [
+    path.join(dir, name),
+    suffixedName ? path.join(dir, suffixedName) : "",
+    path.join(dir, "bin", name),
+    suffixedName ? path.join(dir, "bin", suffixedName) : "",
+  ].filter(Boolean));
 }
 
 function whisperModelCandidates() {
@@ -464,22 +525,31 @@ async function localSttStatus() {
 
 async function ffmpegStatus() {
   const ffmpegPath = process.env.FFMPEG_PATH || await resolveCommand("ffmpeg", candidateFfmpegPaths);
-  const brewPath = await resolveCommand("brew", candidateBrewPaths);
   const installed = ffmpegPath ? await commandVersion(ffmpegPath) : { ok: false };
-  const canUseMacInstaller = isDesktop && process.platform === "darwin";
   return {
     available: !!installed.ok,
     path: installed.ok ? ffmpegPath : "",
     version: installed.ok ? installed.output : "",
-    installable: canUseMacInstaller,
-    homebrewAvailable: !!brewPath,
-    homebrewPath: brewPath,
-    installCommand: brewPath ? `${brewPath} install ffmpeg` : "Install Homebrew, then run brew install ffmpeg",
     message: installed.ok
-      ? "FFmpeg is installed. Podcast transcription is available."
-      : canUseMacInstaller
-        ? "FFmpeg is not installed. Podcast transcription is unavailable until FFmpeg is installed."
-        : "FFmpeg is not installed. Install FFmpeg with your system package manager to enable podcast transcription.",
+      ? "FFmpeg fallback is available."
+      : "FFmpeg fallback is unavailable.",
+  };
+}
+
+async function audioConverterStatus() {
+  const binaryPath = process.env.PILLAR_AUDIO_CONVERT_PATH
+    ? path.resolve(process.env.PILLAR_AUDIO_CONVERT_PATH)
+    : await resolveCommand("pillar-audio-convert", audioConvertCandidates());
+  const installed = binaryPath && fs.existsSync(binaryPath)
+    ? await commandVersion(binaryPath, ["--help"])
+    : { ok: false };
+  return {
+    provider: "pillar-audio-convert",
+    available: !!installed.ok,
+    path: installed.ok ? binaryPath : "",
+    message: installed.ok
+      ? "Bundled audio converter is available for local podcast transcription."
+      : "Bundled audio converter is unavailable. Reinstall the desktop app or set PILLAR_AUDIO_CONVERT_PATH for self-hosted/server installs.",
   };
 }
 
@@ -494,46 +564,6 @@ async function downloadLocalSttModel() {
   await pipeline(response.body, fs.createWriteStream(partial));
   fs.renameSync(partial, target);
   return { ok: true, modelPath: target, message: `Downloaded ${whisperModelFile}.` };
-}
-
-async function openHomebrewBootstrapInstaller() {
-  const scriptPath = path.join(dataDir, "install-ffmpeg-macos.sh");
-  const script = `#!/bin/bash
-set -e
-echo "Pillar Brief FFmpeg installer"
-echo
-if ! command -v brew >/dev/null 2>&1; then
-  echo "Installing Homebrew..."
-  NONINTERACTIVE=1 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-fi
-if [ -x /opt/homebrew/bin/brew ]; then
-  eval "$(/opt/homebrew/bin/brew shellenv)"
-elif [ -x /usr/local/bin/brew ]; then
-  eval "$(/usr/local/bin/brew shellenv)"
-fi
-echo "Installing FFmpeg..."
-brew install ffmpeg
-echo
-echo "FFmpeg install complete. Return to Pillar Brief and click Re-check."
-read -n 1 -s -r -p "Press any key to close this window."
-`;
-  fs.writeFileSync(scriptPath, script, { mode: 0o755 });
-  await execFileAsync("open", ["-a", "Terminal", scriptPath]);
-  return scriptPath;
-}
-
-function installFfmpegWithBrew(brewPath) {
-  return new Promise((resolve) => {
-    const child = spawn(brewPath, ["install", "ffmpeg"], { env: process.env });
-    let output = "";
-    const append = (chunk) => {
-      output = `${output}${chunk.toString()}`.slice(-8000);
-    };
-    child.stdout.on("data", append);
-    child.stderr.on("data", append);
-    child.on("error", (error) => resolve({ ok: false, error: error.message, output }));
-    child.on("close", (code) => resolve({ ok: code === 0, code, output }));
-  });
 }
 
 function sourceCredentialStatus(type) {
@@ -809,6 +839,9 @@ function sanitizeBriefSetupDraft(item = {}, current = briefConfig()) {
     productName: String(item.productName || current.productName || "Pillar Brief").trim().slice(0, 80) || "Pillar Brief",
     audienceContext: String(item.audienceContext || current.audienceContext || "").trim().slice(0, 1200),
     voiceRules: String(item.voiceRules || current.voiceRules || "").trim().slice(0, 1200),
+    publishingPreset: sanitizePublishingPreset(item.publishingPreset || current.publishingPreset || defaultPublishingPreset),
+    publishingStylePrompt: String(item.publishingStylePrompt || current.publishingStylePrompt || publishingPresetDefaults().publishingStylePrompt).trim().slice(0, 1600),
+    lengthGuidance: String(item.lengthGuidance || current.lengthGuidance || publishingPresetDefaults().lengthGuidance).trim().slice(0, 1200),
     deliveryFrequency: current.deliveryFrequency || "Daily",
     deliveryTime: current.deliveryTime || "08:00",
     deliveryTimezone: current.deliveryTimezone || "America/Denver",
@@ -1614,9 +1647,26 @@ async function downloadAudio(url, label) {
 }
 
 async function splitAudio(filePath, label) {
+  const converter = await audioConverterStatus();
+  if (converter.available) {
+    try {
+      const { stdout } = await execFileAsync(converter.path, [
+        "--input", filePath,
+        "--output-dir", audioDir,
+        "--label", label,
+        "--chunk-seconds", "600",
+      ], { timeout: 900000, maxBuffer: 1024 * 1024 });
+      const payload = JSON.parse(stdout || "{}");
+      const chunks = Array.isArray(payload.chunks) ? payload.chunks.filter((chunk) => fs.existsSync(chunk)) : [];
+      if (chunks.length) return chunks;
+      throw new Error("Audio converter did not create any chunks.");
+    } catch (error) {
+      audit("audio.converter_failed", "runtime", "pillar-audio-convert", error.message || "Audio converter failed; falling back to FFmpeg", { filePath }, "system");
+    }
+  }
   const status = await ffmpegStatus();
   if (!status.available) {
-    throw new Error("Local podcast transcription is unavailable because FFmpeg is not installed. Install FFmpeg, then try again.");
+    throw new Error("Local podcast transcription is unavailable because the bundled audio converter is missing. Reinstall the app or set PILLAR_AUDIO_CONVERT_PATH for self-hosted/server installs.");
   }
   const outputPattern = path.join(audioDir, `${label}-part-%03d.m4a`);
   await execFileAsync(status.path, [
@@ -1648,9 +1698,27 @@ function isWavFile(filePath) {
 
 async function ensureWhisperWav(filePath) {
   if (isWavFile(filePath)) return { filePath, cleanup: false };
+  const converter = await audioConverterStatus();
+  if (converter.available) {
+    const label = `whisper-input-${id("wav")}`;
+    try {
+      const { stdout } = await execFileAsync(converter.path, [
+        "--input", filePath,
+        "--output-dir", audioDir,
+        "--label", label,
+        "--chunk-seconds", "86400",
+      ], { timeout: 180000, maxBuffer: 1024 * 1024 });
+      const payload = JSON.parse(stdout || "{}");
+      const wavPath = Array.isArray(payload.chunks) ? payload.chunks.find((chunk) => fs.existsSync(chunk)) : "";
+      if (wavPath) return { filePath: wavPath, cleanup: true };
+      throw new Error("Audio converter did not create a WAV file.");
+    } catch (error) {
+      audit("audio.converter_failed", "runtime", "pillar-audio-convert", error.message || "Audio converter failed; falling back to FFmpeg", { filePath }, "system");
+    }
+  }
   const status = await ffmpegStatus();
   if (!status.available) {
-    throw new Error("Local speech-to-text needs WAV audio. FFmpeg is required to convert this audio format, or record/send WAV directly.");
+    throw new Error("Local speech-to-text needs WAV audio, but the bundled audio converter is missing. Reinstall the app or set PILLAR_AUDIO_CONVERT_PATH for self-hosted/server installs.");
   }
   const wavPath = path.join(audioDir, `whisper-input-${id("wav")}.wav`);
   await execFileAsync(status.path, [
@@ -3297,12 +3365,16 @@ function seed() {
     saveModelProviderKey(currentModel.provider, currentModel.api_key);
   }
   if (!get("SELECT id FROM brief_config WHERE id = 1")) {
-    run(`INSERT INTO brief_config (id, owner_name, product_name, audience_context, voice_rules, delivery_frequency, delivery_time, delivery_timezone, delivery_day, section_schema_json, analyzers_json, analyzer_behavior, perspective_lenses_json, perspective_lenses_migrated, updated_at)
-         VALUES (1, $owner, $product, $audience, $voice, 'Daily', '08:00', 'America/Denver', 'Monday', $sections, $analyzers, $behavior, '[]', 1, $t)`, {
+    const publishing = publishingPresetDefaults(defaultPublishingPreset);
+    run(`INSERT INTO brief_config (id, owner_name, product_name, audience_context, voice_rules, publishing_preset, publishing_style_prompt, length_guidance, delivery_frequency, delivery_time, delivery_timezone, delivery_day, section_schema_json, analyzers_json, analyzer_behavior, perspective_lenses_json, perspective_lenses_migrated, updated_at)
+         VALUES (1, $owner, $product, $audience, $voice, $preset, $style, $length, 'Daily', '08:00', 'America/Denver', 'Monday', $sections, $analyzers, $behavior, '[]', 1, $t)`, {
       $owner: "You",
       $product: "Pillar Brief",
       $audience: "A private daily intelligence brief for the brief owner. Explain sources, entities, mechanisms, or technical terms when useful.",
       $voice: "Concise, strategic, candid, approval-safe, specific, and plain-English. Avoid generic corporate language.",
+      $preset: defaultPublishingPreset,
+      $style: publishing.publishingStylePrompt,
+      $length: publishing.lengthGuidance,
       $sections: json([
         { key: "executiveRead", label: "Executive Read", enabled: true, instruction: "2-3 concise paragraphs that explain the situation without unexplained jargon." },
         { key: "backgroundContext", label: "Plain-English Context", enabled: true, instruction: "3-7 bullets explaining key terms, entities, mechanisms, and jargon." },
@@ -3320,8 +3392,17 @@ function seed() {
       $t: t,
     });
   }
-  const configRow = get("SELECT analyzers_json, analyzer_behavior, perspective_lenses_json, perspective_lenses_migrated FROM brief_config WHERE id = 1");
+  const configRow = get("SELECT analyzers_json, analyzer_behavior, perspective_lenses_json, perspective_lenses_migrated, publishing_preset, publishing_style_prompt, length_guidance FROM brief_config WHERE id = 1");
   if (configRow) {
+    const publishing = publishingPresetDefaults(sanitizePublishingPreset(configRow.publishing_preset));
+    if (!String(configRow.publishing_style_prompt || "").trim() || !String(configRow.length_guidance || "").trim()) {
+      run("UPDATE brief_config SET publishing_preset=$preset, publishing_style_prompt=$style, length_guidance=$length, updated_at=$t WHERE id=1", {
+        $preset: sanitizePublishingPreset(configRow.publishing_preset),
+        $style: String(configRow.publishing_style_prompt || "").trim() || publishing.publishingStylePrompt,
+        $length: String(configRow.length_guidance || "").trim() || publishing.lengthGuidance,
+        $t: now(),
+      });
+    }
     const currentAnalyzers = parse(configRow.analyzers_json, []);
     if (!Array.isArray(currentAnalyzers) || currentAnalyzers.length === 0) {
       run("UPDATE brief_config SET analyzers_json=$analyzers, updated_at=$t WHERE id=1", { $analyzers: json(defaultAnalyzers()), $t: t });
@@ -3631,6 +3712,9 @@ function briefConfig() {
     productName: r.product_name,
     audienceContext: r.audience_context,
     voiceRules: r.voice_rules,
+    publishingPreset: sanitizePublishingPreset(r.publishing_preset || defaultPublishingPreset),
+    publishingStylePrompt: String(r.publishing_style_prompt || publishingPresetDefaults(r.publishing_preset).publishingStylePrompt),
+    lengthGuidance: String(r.length_guidance || publishingPresetDefaults(r.publishing_preset).lengthGuidance),
     deliveryFrequency: r.delivery_frequency || "Daily",
     deliveryTime: r.delivery_time || "08:00",
     deliveryTimezone: r.delivery_timezone || "America/Denver",
@@ -4115,7 +4199,7 @@ function knownSectionContent(brief = {}, key = "") {
 }
 
 function fallbackSectionContent(section = {}, selectedIssues = [], config = briefConfig()) {
-  if (!selectedIssues.length) return "No usable source items published today for this section.";
+  if (!selectedIssues.length) return "No relevant items were found for this section today.";
   const label = String(section.label || section.key || "Section").toLowerCase();
   const owner = config.ownerName || "the brief owner";
   if (label.includes("signal") || label.includes("top")) {
@@ -4202,8 +4286,12 @@ async function synthesizeStrategicBrief({ selectedIssues, sourceResults, selecte
     "Do not invent quotes, source details, outcomes, companies, people, or numbers.",
     `Audience context: ${config.audienceContext || `${owner} is smart but may not know every term.`}`,
     `Voice rules: ${config.voiceRules || "Clear, concise, plain-English, with a little personality. Avoid corporate language."}`,
+    `Publishing style: ${config.publishingStylePrompt || publishingPresetDefaults(config.publishingPreset).publishingStylePrompt}`,
+    `Length guidance: ${config.lengthGuidance || publishingPresetDefaults(config.publishingPreset).lengthGuidance}`,
     `Write to ${owner} directly. Explain unfamiliar entities or mechanisms only when it helps.`,
     "Prefer short paragraphs and sharp bullets. Skip throat-clearing. No generic management-speak.",
+    "For any configured section that has no relevant selected source items or calendar entries today, return exactly: No relevant items were found for this section today.",
+    "Do not write a full paragraph about absent coverage in a section. Keep source/API gaps in coverageNotes only.",
     "For titleSummary, write the phrase that appears after today's date in the saved brief title. It must summarize the actual main points, not broad categories.",
     "Good titleSummary examples: OpenAI IPO chatter, Anthropic model rumors, and Intel chip speculation. Bad examples: AI, crypto, political race signals.",
     "Do not include the date in titleSummary. Use 8-16 words, name concrete people/companies/topics when available, and avoid words like signals, updates, happenings, latest, roundup, or news unless they are part of a source title.",
@@ -4239,6 +4327,9 @@ async function synthesizeStrategicBrief({ selectedIssues, sourceResults, selecte
       productName: config.productName,
       audienceContext: config.audienceContext,
       voiceRules: config.voiceRules,
+      publishingPreset: config.publishingPreset,
+      publishingStylePrompt: config.publishingStylePrompt,
+      lengthGuidance: config.lengthGuidance,
       enabledSections,
       analyzers: enabledAnalyzers.map((analyzer) => ({
         name: analyzer.name,
@@ -4257,7 +4348,7 @@ async function synthesizeStrategicBrief({ selectedIssues, sourceResults, selecte
     },
     coverageDiagnostics,
     calendarAgenda,
-    sourceFreshnessPolicy: "Selected source items have publishedAt dates from today only. If no selectedIssues are present, say there were no usable items published today.",
+    sourceFreshnessPolicy: "Selected source items have publishedAt dates from today only. If no selectedIssues are present, use the configured empty-section sentence rather than writing filler.",
     sourceResults,
   });
   let text = await callTextModel({ system, prompt });
@@ -4335,10 +4426,9 @@ function renderOnePageBrief(artifact = {}) {
     lines.push("", "## Coverage Notes");
     coverageNotes.forEach((note) => lines.push(`- ${note}`));
   }
-  const bullets = (items) => Array.isArray(items) && items.length ? items.forEach((item) => lines.push(`- ${typeof item === "string" ? item : JSON.stringify(item)}`)) : lines.push("- No read generated.");
   const renderContent = (content) => {
     if (Array.isArray(content)) {
-      if (!content.length) lines.push("- No read generated.");
+      if (!content.length) lines.push("No relevant items were found for this section today.");
       content.forEach((item) => {
         if (typeof item === "string") lines.push(`- ${item}`);
         else if (item?.lens || item?.read) {
@@ -4350,7 +4440,7 @@ function renderOnePageBrief(artifact = {}) {
       });
       return;
     }
-    lines.push(String(content || "No read generated."));
+    lines.push(String(content || "No relevant items were found for this section today."));
   };
   const renderSourceEvidence = (section) => {
     lines.push("", `## ${section.label || "Source Evidence"}`);
@@ -4887,8 +4977,8 @@ app.post("/api/runtime/shutdown", (req, res) => {
   setTimeout(() => process.exit(0), 150);
 });
 
-app.get("/api/runtime/ffmpeg", async (req, res) => {
-  res.json({ ffmpeg: await ffmpegStatus(), state: state() });
+app.get("/api/runtime/audio-converter", async (req, res) => {
+  res.json({ audioConverter: await audioConverterStatus(), state: state() });
 });
 
 app.get("/api/runtime/stt", async (req, res) => {
@@ -4948,39 +5038,9 @@ app.post("/api/runtime/stt/model/install", async (req, res) => {
   }
 });
 
-app.post("/api/runtime/ffmpeg/install", async (req, res) => {
-  if (!isDesktop || process.platform !== "darwin") {
-    return res.status(400).json({ error: "One-click FFmpeg install is only available in the macOS desktop app. Install FFmpeg with your system package manager.", ffmpeg: await ffmpegStatus(), state: state() });
-  }
-  const status = await ffmpegStatus();
-  if (status.available) return res.json({ ok: true, message: "FFmpeg is already installed.", ffmpeg: status, state: state() });
-  if (!status.homebrewAvailable) {
-    const scriptPath = await openHomebrewBootstrapInstaller();
-    return res.json({
-      ok: true,
-      message: "Opened the Homebrew and FFmpeg installer in Terminal. Return here and click Re-check when it finishes.",
-      installerScriptPath: scriptPath,
-      ffmpeg: await ffmpegStatus(),
-      state: state(),
-    });
-  }
-  const install = await installFfmpegWithBrew(status.homebrewPath);
-  const nextStatus = await ffmpegStatus();
-  if (!install.ok || !nextStatus.available) {
-    return res.status(500).json({
-      error: "FFmpeg install did not complete. You can also run `brew install ffmpeg` in Terminal.",
-      output: install.output,
-      ffmpeg: nextStatus,
-      state: state(),
-    });
-  }
-  audit("runtime.ffmpeg_installed", "runtime", "ffmpeg", "Installed FFmpeg with Homebrew", { output: install.output?.slice(-1200) || "" }, "system");
-  res.json({ ok: true, message: "FFmpeg installed successfully.", ffmpeg: nextStatus, state: state() });
-});
-
 app.post("/api/runtime/open-url", async (req, res) => {
   const url = String(req.body?.url || "").trim();
-  if (!/^https:\/\/(core\.telegram\.org|telegram\.org|t\.me|brew\.sh|formulae\.brew\.sh|ffmpeg\.org|platform\.openai\.com|help\.openai\.com|console\.anthropic\.com|docs\.anthropic\.com|openrouter\.ai|accounts\.google\.com|auth\.pillar\.transformationagency\.com|pillar-brief-auth\.vercel\.app|aistudio\.google\.com|ai\.google\.dev|developer\.x\.com|docs\.x\.com|console\.x\.ai|docs\.x\.ai|elevenlabs\.io)(\/|$)/i.test(url)) {
+  if (!/^https:\/\/(core\.telegram\.org|telegram\.org|t\.me|platform\.openai\.com|help\.openai\.com|console\.anthropic\.com|docs\.anthropic\.com|openrouter\.ai|accounts\.google\.com|auth\.pillar\.transformationagency\.com|pillar-brief-auth\.vercel\.app|aistudio\.google\.com|ai\.google\.dev|developer\.x\.com|docs\.x\.com|console\.x\.ai|docs\.x\.ai|elevenlabs\.io)(\/|$)/i.test(url)) {
     return res.status(400).json({ error: "That external URL is not allowed.", state: state() });
   }
   if (isDesktop && process.platform === "darwin") {
@@ -5064,12 +5124,16 @@ app.post("/api/onboarding/brief-setup-apply", (req, res) => {
     : draft.ownerName;
   run(`UPDATE brief_config
        SET owner_name=$owner, product_name=$product, audience_context=$audience,
-           voice_rules=$voice, section_schema_json=$sections, updated_at=$t
+           voice_rules=$voice, publishing_preset=$preset, publishing_style_prompt=$style,
+           length_guidance=$length, section_schema_json=$sections, updated_at=$t
        WHERE id=1`, {
     $owner: ownerName,
     $product: draft.productName,
     $audience: draft.audienceContext,
     $voice: draft.voiceRules,
+    $preset: sanitizePublishingPreset(draft.publishingPreset),
+    $style: draft.publishingStylePrompt,
+    $length: draft.lengthGuidance,
     $sections: json(draft.sections),
     $t: now(),
   });
@@ -5141,11 +5205,16 @@ app.patch("/api/brief-config", (req, res) => {
   const sections = Array.isArray(b.sections) ? b.sections : current.sections;
   const analyzers = sanitizeAnalyzerList(Array.isArray(b.analyzers) ? b.analyzers : current.analyzers, defaultAnalyzers());
   const analyzerBehavior = String(b.analyzerBehavior ?? current.analyzerBehavior ?? defaultAnalyzerBehavior).trim() || defaultAnalyzerBehavior;
+  const publishingPreset = sanitizePublishingPreset(b.publishingPreset ?? current.publishingPreset ?? defaultPublishingPreset);
+  const publishingDefaults = publishingPresetDefaults(publishingPreset);
+  const publishingStylePrompt = String(b.publishingStylePrompt ?? current.publishingStylePrompt ?? publishingDefaults.publishingStylePrompt).trim() || publishingDefaults.publishingStylePrompt;
+  const lengthGuidance = String(b.lengthGuidance ?? current.lengthGuidance ?? publishingDefaults.lengthGuidance).trim() || publishingDefaults.lengthGuidance;
   const hasPerspectiveLenses = Object.prototype.hasOwnProperty.call(b, "perspectiveLenses");
   const perspectiveLenses = sanitizePerspectiveLenses(Array.isArray(b.perspectiveLenses) ? b.perspectiveLenses : current.perspectiveLenses);
   run(`UPDATE brief_config
        SET owner_name=$owner, product_name=$product, audience_context=$audience,
-           voice_rules=$voice, delivery_frequency=$frequency, delivery_time=$time,
+           voice_rules=$voice, publishing_preset=$preset, publishing_style_prompt=$style,
+           length_guidance=$length, delivery_frequency=$frequency, delivery_time=$time,
            delivery_timezone=$timezone, delivery_day=$day, section_schema_json=$sections,
            analyzers_json=$analyzers, analyzer_behavior=$analyzerBehavior,
            perspective_lenses_json=$perspectiveLenses,
@@ -5156,6 +5225,9 @@ app.patch("/api/brief-config", (req, res) => {
     $product: String(b.productName ?? current.productName ?? "Pillar Brief").trim() || "Pillar Brief",
     $audience: String(b.audienceContext ?? current.audienceContext ?? ""),
     $voice: String(b.voiceRules ?? current.voiceRules ?? ""),
+    $preset: publishingPreset,
+    $style: publishingStylePrompt.slice(0, 1600),
+    $length: lengthGuidance.slice(0, 1200),
     $frequency: ["Daily", "Weekly"].includes(b.deliveryFrequency) ? b.deliveryFrequency : current.deliveryFrequency,
     $time: String(b.deliveryTime ?? current.deliveryTime ?? "08:00"),
     $timezone: String(b.deliveryTimezone ?? current.deliveryTimezone ?? "America/Denver"),
@@ -5434,6 +5506,22 @@ app.get("/api/workflow-runs/:id", (req, res) => {
   const run = workflowRuns().find((item) => item.id === req.params.id);
   if (!run) return res.status(404).json({ error: "Workflow run not found", state: state() });
   res.json({ state: state(), run });
+});
+
+app.delete("/api/workflow-runs/:id", (req, res) => {
+  const row = get("SELECT * FROM workflow_runs WHERE id=$id", { $id: req.params.id });
+  if (!row) return res.status(404).json({ error: "Workflow run not found", state: state() });
+  const artifact = parse(row.artifact_json, {});
+  const audioFileName = artifact?.audio?.fileName ? path.basename(String(artifact.audio.fileName)) : "";
+  if (audioFileName) {
+    const audioPath = path.join(audioDir, audioFileName);
+    if (audioPath.startsWith(audioDir) && fs.existsSync(audioPath)) {
+      try { fs.unlinkSync(audioPath); } catch {}
+    }
+  }
+  run("DELETE FROM workflow_runs WHERE id=$id", { $id: req.params.id });
+  audit("workflow_run.deleted", "workflow_run", req.params.id, row.label || "Deleted brief", { audioFileName }, "operator");
+  res.json(state());
 });
 
 app.post("/api/workflow-runs/:id/audio", async (req, res) => {

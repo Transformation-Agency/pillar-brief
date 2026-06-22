@@ -57,6 +57,29 @@ const nav = [
 const defaultOwnerName = "You";
 const defaultOpenAiModel = "gpt-5.4-mini";
 const defaultGrokModel = "grok-4.3";
+const publishingPresets = {
+  concise: {
+    label: "Concise",
+    publishingStylePrompt: "Write as a tight executive brief: skimmable, direct, source-backed, and mostly bullets with only the minimum context needed.",
+    lengthGuidance: "Concise: aim for 500-800 words total. Use 1-2 short paragraphs for the executive read, 2-4 bullets per section, and keep only the highest-signal items.",
+  },
+  standard: {
+    label: "Standard",
+    publishingStylePrompt: "Write as a practical daily intelligence memo: clear sections, plain-English context, useful implications, and enough detail to make decisions without wandering.",
+    lengthGuidance: "Standard: aim for 900-1,400 words total. Use 2-3 short paragraphs for the executive read and 3-6 bullets per section.",
+  },
+  detailed: {
+    label: "Detailed",
+    publishingStylePrompt: "Write as a detailed analytical brief: fuller context, careful explanation, tradeoffs, implications, open questions, and source grounding for a deeper read.",
+    lengthGuidance: "Detailed: aim for 1,600-2,400 words total. Include more supporting context and 5-8 bullets per section when the source material supports it.",
+  },
+};
+const publishingPresetOptions = [
+  { value: "concise", label: "Concise" },
+  { value: "standard", label: "Standard" },
+  { value: "detailed", label: "Detailed" },
+  { value: "custom", label: "Custom" },
+];
 const defaultModelForProvider = (provider) => {
   if (provider === "openai") return defaultOpenAiModel;
   if (provider === "xai") return defaultGrokModel;
@@ -202,12 +225,13 @@ function sourcePrerequisites(source, state) {
     });
   }
   if (source.type === "Podcast" && source.config?.transcribeNewEpisodes !== false) {
-    if (state.runtime?.ffmpeg?.available === false) {
+    const audioReady = state.runtime?.audioConverter?.available;
+    if (!audioReady) {
       notes.push({
-        key: "ffmpeg",
+        key: "audioConverter",
         blocking: true,
-        label: "Needs FFmpeg",
-        body: "Install FFmpeg before long podcast audio can be split and converted for transcription.",
+        label: "Needs audio conversion",
+        body: "Podcast transcription needs the bundled audio converter. Reinstall the app or configure PILLAR_AUDIO_CONVERT_PATH for self-hosting.",
       });
     }
     const localSttReady = state.runtime?.stt?.available;
@@ -455,6 +479,215 @@ function formatAudioTime(seconds) {
   return `${minutes}:${remainder}`;
 }
 
+function safeFileSlug(value = "brief") {
+  return String(value || "brief")
+    .replace(/^#+\s*/, "")
+    .replace(/[^\w\s.-]+/g, "")
+    .trim()
+    .replace(/\s+/g, "-")
+    .replace(/-+/g, "-")
+    .slice(0, 90) || "brief";
+}
+
+function normalizePdfText(value = "") {
+  return String(value || "")
+    .replace(/\u2018|\u2019/g, "'")
+    .replace(/\u201c|\u201d/g, '"')
+    .replace(/\u2013|\u2014/g, "-")
+    .replace(/\u2026/g, "...")
+    .replace(/\u2022/g, "-")
+    .replace(/[^\x09\x0A\x0D\x20-\x7E]/g, "");
+}
+
+function escapePdfText(value = "") {
+  return normalizePdfText(value).replace(/\\/g, "\\\\").replace(/\(/g, "\\(").replace(/\)/g, "\\)");
+}
+
+function pdfTextWidth(text, fontSize, font = "body") {
+  const base = font === "title" ? 0.5 : font === "bold" ? 0.54 : 0.51;
+  return normalizePdfText(text).length * fontSize * base;
+}
+
+function wrapPdfText(text, maxWidth, fontSize, font = "body") {
+  const words = normalizePdfText(text).replace(/\s+/g, " ").trim().split(" ").filter(Boolean);
+  const lines = [];
+  let line = "";
+  for (const word of words) {
+    const next = line ? `${line} ${word}` : word;
+    if (line && pdfTextWidth(next, fontSize, font) > maxWidth) {
+      lines.push(line);
+      line = word;
+    } else {
+      line = next;
+    }
+  }
+  if (line) lines.push(line);
+  return lines.length ? lines : [""];
+}
+
+function markdownToPdfBlocks(markdown = "") {
+  const blocks = [];
+  const lines = String(markdown || "").split(/\r?\n/);
+  let paragraph = [];
+  const flushParagraph = () => {
+    const text = paragraph.join(" ").trim();
+    if (text) blocks.push({ type: "paragraph", text });
+    paragraph = [];
+  };
+  for (const rawLine of lines) {
+    const line = rawLine.trim();
+    if (!line) {
+      flushParagraph();
+      continue;
+    }
+    const heading = line.match(/^(#{1,3})\s+(.+)$/);
+    if (heading) {
+      flushParagraph();
+      blocks.push({ type: heading[1].length === 1 ? "title" : "heading", level: heading[1].length, text: heading[2] });
+      continue;
+    }
+    const bullet = line.match(/^[-*]\s+(.+)$/);
+    if (bullet) {
+      flushParagraph();
+      blocks.push({ type: "bullet", text: bullet[1] });
+      continue;
+    }
+    paragraph.push(line);
+  }
+  flushParagraph();
+  return blocks;
+}
+
+function buildBriefPdfBytes(markdown = "", meta = {}) {
+  const pageWidth = 612;
+  const pageHeight = 792;
+  const margin = 54;
+  const contentWidth = pageWidth - margin * 2;
+  const navy = "0.121 0.227 0.373";
+  const gold = "0.769 0.525 0.161";
+  const black = "0.118 0.110 0.102";
+  const muted = "0.435 0.400 0.356";
+  const line = "0.831 0.788 0.725";
+  const streams = [];
+  let ops = [];
+  let y = pageHeight - margin;
+  const add = (op) => ops.push(op);
+  const text = (value, x, nextY, font, size, color = black) => {
+    add(`BT ${color} rg /${font} ${size} Tf ${x.toFixed(2)} ${nextY.toFixed(2)} Td (${escapePdfText(value)}) Tj ET`);
+  };
+  const rule = (nextY) => {
+    add(`q ${line} RG 0.75 w ${margin.toFixed(2)} ${nextY.toFixed(2)} m ${(pageWidth - margin).toFixed(2)} ${nextY.toFixed(2)} l S Q`);
+  };
+  const footer = () => {
+    text("Pillar Brief", margin, 28, "F2", 9, navy);
+    text(`Page ${streams.length + 1}`, pageWidth - margin - 36, 28, "F1", 9, muted);
+  };
+  const newPage = () => {
+    footer();
+    streams.push(ops.join("\n"));
+    ops = [];
+    y = pageHeight - margin;
+  };
+  const ensure = (height) => {
+    if (y - height < margin + 24) newPage();
+  };
+  const lineText = (value, x, size, font = "F1", color = black, leading = size * 1.35) => {
+    ensure(leading + 4);
+    text(value, x, y, font, size, color);
+    y -= leading;
+  };
+  const paragraph = (value, options = {}) => {
+    const size = options.size || 10.5;
+    const leading = options.leading || 15;
+    const x = options.x || margin;
+    const width = options.width || contentWidth;
+    const font = options.font || "F1";
+    const color = options.color || black;
+    const lines = wrapPdfText(value, width, size, font === "F2" ? "bold" : "body");
+    ensure(lines.length * leading + 4);
+    for (const lineValue of lines) {
+      text(lineValue, x, y, font, size, color);
+      y -= leading;
+    }
+  };
+
+  add(`q ${navy} rg ${margin.toFixed(2)} ${(pageHeight - 38).toFixed(2)} 38 4 re f Q`);
+  text("PILLAR", margin, y, "F3", 13, black);
+  text("Brief", margin + 55, y, "F3", 13, navy);
+  y -= 24;
+  rule(y);
+  y -= 24;
+
+  const blocks = markdownToPdfBlocks(markdown);
+  const firstTitle = blocks.find((block) => block.type === "title")?.text || meta.title || "Pillar Brief";
+  const generated = meta.generatedAt ? `Generated ${new Date(meta.generatedAt).toLocaleString()}` : "";
+  paragraph(firstTitle, { size: 24, leading: 29, font: "F3", color: black, width: contentWidth });
+  if (generated) {
+    y -= 2;
+    lineText(generated, margin, 9.5, "F1", muted, 14);
+  }
+  if (meta.sources) lineText(meta.sources, margin, 9.5, "F1", muted, 14);
+  y -= 10;
+
+  for (const block of blocks.filter((item) => item.type !== "title")) {
+    if (block.type === "heading") {
+      ensure(34);
+      y -= 7;
+      paragraph(block.text, { size: block.level === 2 ? 15 : 13, leading: 18, font: "F3", color: navy, width: contentWidth });
+      rule(y + 7);
+      y -= 7;
+    } else if (block.type === "bullet") {
+      const lines = wrapPdfText(block.text, contentWidth - 20, 10.5, "body");
+      ensure(lines.length * 15 + 4);
+      text("-", margin + 6, y, "F2", 11, gold);
+      text(lines[0], margin + 20, y, "F1", 10.5, black);
+      y -= 15;
+      for (const extra of lines.slice(1)) {
+        text(extra, margin + 20, y, "F1", 10.5, black);
+        y -= 15;
+      }
+    } else {
+      paragraph(block.text, { size: 10.5, leading: 15, font: "F1", color: black, width: contentWidth });
+      y -= 4;
+    }
+  }
+  footer();
+  streams.push(ops.join("\n"));
+
+  const objects = [
+    "<< /Type /Catalog /Pages 2 0 R >>",
+    "",
+    "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+    "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold >>",
+    "<< /Type /Font /Subtype /Type1 /BaseFont /Times-Bold >>",
+  ];
+  const pageObjectNumbers = [];
+  const contentObjectNumbers = [];
+  for (const stream of streams) {
+    const contentNumber = objects.length + 1;
+    const pageNumber = objects.length + 2;
+    contentObjectNumbers.push(contentNumber);
+    pageObjectNumbers.push(pageNumber);
+    objects.push(`<< /Length ${stream.length} >>\nstream\n${stream}\nendstream`);
+    objects.push(`<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${pageWidth} ${pageHeight}] /Resources << /Font << /F1 3 0 R /F2 4 0 R /F3 5 0 R >> >> /Contents ${contentNumber} 0 R >>`);
+  }
+  objects[1] = `<< /Type /Pages /Kids [${pageObjectNumbers.map((number) => `${number} 0 R`).join(" ")}] /Count ${pageObjectNumbers.length} >>`;
+
+  let pdf = "%PDF-1.4\n%\xE2\xE3\xCF\xD3\n";
+  const offsets = [0];
+  objects.forEach((object, index) => {
+    offsets.push(pdf.length);
+    pdf += `${index + 1} 0 obj\n${object}\nendobj\n`;
+  });
+  const xrefOffset = pdf.length;
+  pdf += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n`;
+  for (const offset of offsets.slice(1)) {
+    pdf += `${String(offset).padStart(10, "0")} 00000 n \n`;
+  }
+  pdf += `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xrefOffset}\n%%EOF`;
+  return new TextEncoder().encode(pdf);
+}
+
 async function copyText(text) {
   await navigator.clipboard.writeText(text);
 }
@@ -466,11 +699,11 @@ function useConsoleState() {
     try {
       const nextState = await api("/api/state");
       try {
-        const [ffmpegRuntime, sttRuntime] = await Promise.all([
-          api("/api/runtime/ffmpeg"),
+        const [audioRuntime, sttRuntime] = await Promise.all([
+          api("/api/runtime/audio-converter"),
           api("/api/runtime/stt"),
         ]);
-        setState({ ...nextState, runtime: { ...(nextState.runtime || {}), ffmpeg: ffmpegRuntime.ffmpeg, stt: sttRuntime.stt } });
+        setState({ ...nextState, runtime: { ...(nextState.runtime || {}), audioConverter: audioRuntime.audioConverter, stt: sttRuntime.stt } });
       } catch {
         setState(nextState);
       }
@@ -933,10 +1166,11 @@ function Sources({ state, mutate, refresh }) {
   const [spotifyResolve, setSpotifyResolve] = React.useState({ loading: false, message: "", tone: "muted" });
   const [transcribing, setTranscribing] = React.useState({});
   const [transcribeMessage, setTranscribeMessage] = React.useState("");
-  const ffmpeg = state.runtime?.ffmpeg;
+  const audioConverter = state.runtime?.audioConverter;
   const stt = state.runtime?.stt;
   const cloudTranscriptionReady = ["openai", "custom"].includes(state.model?.provider) && state.model?.status === "ready";
-  const transcriptionAvailable = ffmpeg?.available !== false && (stt?.available || cloudTranscriptionReady);
+  const audioProcessingAvailable = audioConverter?.available;
+  const transcriptionAvailable = audioProcessingAvailable && (stt?.available || cloudTranscriptionReady);
   const definition = sourceDefinitions[form.type];
   const mode = definition.modes[form.config.mode] ? form.config.mode : Object.keys(definition.modes)[0];
   const modeDefinition = definition.modes[mode];
@@ -1207,7 +1441,7 @@ function Sources({ state, mutate, refresh }) {
           </div>}
           {form.type === "Podcast" && <div className={`notice ${transcriptionAvailable ? "" : "notice-warn"}`}>
             <strong>{transcriptionAvailable ? "Podcast transcription available" : "Podcast transcription unavailable"}</strong>
-            <span>{transcriptionAvailable ? "Podcast audio can be split with FFmpeg and transcribed with local Whisper or your configured cloud fallback." : "Set up FFmpeg plus local Whisper STT or an OpenAI-compatible transcription endpoint before podcast audio can be transcribed."}</span>
+            <span>{transcriptionAvailable ? "Podcast audio can be converted with the bundled audio converter and transcribed with local Whisper or your configured cloud fallback." : "Set up local Whisper STT or an OpenAI-compatible transcription endpoint before podcast audio can be transcribed."}</span>
           </div>}
           {form.type === "Podcast" && <label className="check"><input type="checkbox" checked={form.config.transcribeNewEpisodes !== false && transcriptionAvailable} disabled={!transcriptionAvailable} onChange={(event) => updateConfig("transcribeNewEpisodes", event.target.checked)} /> Transcribe new episodes for briefs</label>}
         </div>
@@ -1418,6 +1652,17 @@ function BriefSetup({ state, mutate }) {
     ...current,
     sections: [...current.sections, { key: `custom-${Date.now()}`, label: "Watchlist", enabled: true, instruction: "3-5 items to monitor next." }],
   }));
+  const applyPublishingPreset = (publishingPreset) => {
+    const preset = publishingPresets[publishingPreset];
+    markForm((current) => preset
+      ? { ...current, publishingPreset, publishingStylePrompt: preset.publishingStylePrompt, lengthGuidance: preset.lengthGuidance }
+      : { ...current, publishingPreset: "custom" });
+  };
+  const updatePublishingField = (patch) => markForm((current) => ({
+    ...current,
+    ...patch,
+    publishingPreset: "custom",
+  }));
   const updateAnalyzer = (index, patch) => markForm((current) => ({
     ...current,
     analyzers: (current.analyzers || []).map((analyzer, i) => i === index ? { ...analyzer, ...patch } : analyzer),
@@ -1451,6 +1696,12 @@ function BriefSetup({ state, mutate }) {
           <Field label="Product name" value={form.productName} onChange={(productName) => markForm({ ...form, productName })} />
           <TextArea label="Audience context" value={form.audienceContext} onChange={(audienceContext) => markForm({ ...form, audienceContext })} rows={4} />
           <TextArea label="Voice rules" value={form.voiceRules} onChange={(voiceRules) => markForm({ ...form, voiceRules })} rows={4} />
+        </div>
+        <div className="publishing-controls">
+          <Select label="Publishing length preset" value={form.publishingPreset || "standard"} onChange={applyPublishingPreset} options={publishingPresetOptions} />
+          <TextArea label="Publishing style prompt" value={form.publishingStylePrompt || ""} onChange={(publishingStylePrompt) => updatePublishingField({ publishingStylePrompt })} rows={3} />
+          <TextArea label="Length guidance" value={form.lengthGuidance || ""} onChange={(lengthGuidance) => updatePublishingField({ lengthGuidance })} rows={3} />
+          <p className="hint">Concise, standard, and detailed fill these two fields. Choose custom or edit either field to fine-tune future briefs.</p>
         </div>
         <Button icon="save" kind="primary">{saveState === "saving" ? "Saving..." : "Save now"}</Button>
       </form>
@@ -1564,6 +1815,12 @@ function Briefs({ state, runWorkflow, refresh }) {
   const [audioPlaying, setAudioPlaying] = React.useState(false);
   const [audioCurrentTime, setAudioCurrentTime] = React.useState(0);
   const [audioDuration, setAudioDuration] = React.useState(0);
+  const [deletingId, setDeletingId] = React.useState("");
+  const [pendingDeleteRun, setPendingDeleteRun] = React.useState(null);
+  const [deleteMessage, setDeleteMessage] = React.useState("");
+  const [downloadBusy, setDownloadBusy] = React.useState(false);
+  const [pdfBusy, setPdfBusy] = React.useState(false);
+  const [downloadMessage, setDownloadMessage] = React.useState("");
   const [deliberationBusy, setDeliberationBusy] = React.useState(false);
   const [deliberationMessage, setDeliberationMessage] = React.useState("");
   const audioRef = React.useRef(null);
@@ -1587,6 +1844,7 @@ function Briefs({ state, runWorkflow, refresh }) {
     setAudioCurrentTime(0);
     setAudioDuration(Number.isFinite(selectedAudioDuration) ? selectedAudioDuration : 0);
     setDeliberationMessage("");
+    setDownloadMessage("");
   }, [selected?.id, selected?.artifact?.audio?.url, selectedAudioDuration]);
   React.useEffect(() => () => audioRef.current?.pause(), []);
   const updateAudioDuration = (audio) => {
@@ -1690,6 +1948,114 @@ function Briefs({ state, runWorkflow, refresh }) {
       setDeliberationBusy(false);
     }
   };
+  const requestDeleteBrief = (run) => {
+    if (!run) return;
+    setDeleteMessage("");
+    setPendingDeleteRun(run);
+  };
+  const confirmDeleteBrief = async () => {
+    const run = pendingDeleteRun;
+    if (!run) return;
+    setDeletingId(run.id);
+    setDeleteMessage("");
+    try {
+      await api(`/api/workflow-runs/${run.id}`, { method: "DELETE" });
+      if (selectedId === run.id) {
+        const nextRun = filtered.find((item) => item.id !== run.id) || state.workflowRuns.find((item) => item.id !== run.id);
+        setSelectedId(nextRun?.id || "");
+      }
+      setPendingDeleteRun(null);
+      await refresh?.();
+    } catch (error) {
+      setDeleteMessage(error.message || "Could not delete this brief.");
+    } finally {
+      setDeletingId("");
+    }
+  };
+  const downloadBriefMarkdown = async () => {
+    if (!selected) return;
+    const markdown = String(selected.artifact?.onePageBrief || "").trim();
+    if (!markdown) {
+      setDownloadMessage("This brief does not have Markdown content to download yet.");
+      return;
+    }
+    setDownloadBusy(true);
+    setDownloadMessage("");
+    const fileName = `${safeFileSlug(briefDisplayTitle(selected))}.md`;
+    try {
+      if (desktopRuntime.isDesktop()) {
+        const savedPath = await desktopRuntime.saveTextFile({
+          title: "Download brief as Markdown",
+          defaultPath: fileName,
+          contents: `${markdown}\n`,
+          filters: [{ name: "Markdown", extensions: ["md", "markdown"] }],
+        });
+        if (savedPath) setDownloadMessage("Brief Markdown saved.");
+        return;
+      }
+      const blob = new Blob([`${markdown}\n`], { type: "text/markdown;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = fileName;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+      setDownloadMessage("Brief Markdown download started.");
+    } catch (error) {
+      setDownloadMessage(error.message || "Could not download this brief.");
+    } finally {
+      setDownloadBusy(false);
+    }
+  };
+  const downloadBriefPdf = async () => {
+    if (!selected) return;
+    const markdown = String(selected.artifact?.onePageBrief || "").trim();
+    if (!markdown) {
+      setDownloadMessage("This brief does not have content to download yet.");
+      return;
+    }
+    setPdfBusy(true);
+    setDownloadMessage("");
+    const fileName = `${safeFileSlug(briefDisplayTitle(selected))}.pdf`;
+    try {
+      const sources = (selected.artifact?.selectedIssues || [])
+        .map((issue) => issue.sourceType || issue.source || "")
+        .filter(Boolean)
+        .slice(0, 6)
+        .join(" · ");
+      const bytes = buildBriefPdfBytes(markdown, {
+        title: briefDisplayTitle(selected),
+        generatedAt: selected.finishedAt || selected.startedAt,
+        sources: sources ? `Sources: ${sources}` : "",
+      });
+      if (desktopRuntime.isDesktop()) {
+        const savedPath = await desktopRuntime.saveBinaryFile({
+          title: "Download brief as PDF",
+          defaultPath: fileName,
+          bytes,
+          filters: [{ name: "PDF", extensions: ["pdf"] }],
+        });
+        if (savedPath) setDownloadMessage("Brief PDF saved.");
+        return;
+      }
+      const blob = new Blob([bytes], { type: "application/pdf" });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = fileName;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+      setDownloadMessage("Brief PDF download started.");
+    } catch (error) {
+      setDownloadMessage(error.message || "Could not download this brief as a PDF.");
+    } finally {
+      setPdfBusy(false);
+    }
+  };
   const avgSignals = state.workflowRuns.length
     ? Math.round(state.workflowRuns.reduce((sum, run) => sum + (run.artifact?.selectedIssues?.length || 0), 0) / state.workflowRuns.length)
     : 0;
@@ -1704,17 +2070,24 @@ function Briefs({ state, runWorkflow, refresh }) {
           const delivered = run.artifact?.telegramDelivery?.ok;
           const running = run.status === "running";
           const failed = run.status === "failed";
-          return <button key={run.id} className={`brief-list-item ${selectedRun ? "active" : ""}`} onClick={() => setSelectedId(run.id)}>
-            <span className="date-icon"><Calendar className="ico" /></span>
-            <span><small>{date.toLocaleDateString()} · {date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}</small><strong>{briefDisplayTitle(run)}</strong><em>{(run.artifact?.selectedIssues || []).slice(0, 3).map((issue) => issue.sourceType || "Signal").join(" · ") || (running ? "In progress" : "Brief")}</em></span>
-            <Badge tone={running ? "muted" : failed ? "err" : delivered ? "ok" : "warn"}>{running ? "Generating..." : failed ? "Failed" : delivered ? "Delivered" : "Saved"}</Badge>
-          </button>;
+          return <div key={run.id} className={`brief-list-item ${selectedRun ? "active" : ""}`}>
+            <button type="button" className="brief-list-main" onClick={() => setSelectedId(run.id)}>
+              <span className="date-icon"><Calendar className="ico" /></span>
+              <span><small>{date.toLocaleDateString()} · {date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}</small><strong>{briefDisplayTitle(run)}</strong><em>{(run.artifact?.selectedIssues || []).slice(0, 3).map((issue) => issue.sourceType || "Signal").join(" · ") || (running ? "In progress" : "Brief")}</em></span>
+              <Badge tone={running ? "muted" : failed ? "err" : delivered ? "ok" : "warn"}>{running ? "Generating..." : failed ? "Failed" : delivered ? "Delivered" : "Saved"}</Badge>
+            </button>
+            <button type="button" className="brief-delete-button" onClick={() => requestDeleteBrief(run)} disabled={deletingId === run.id || running} aria-label={`Delete ${briefDisplayTitle(run)}`}>
+              <Icon name="trash" />
+            </button>
+          </div>;
         })}</div>
       </aside>
       <section className="panel brief-reader">
         {selected ? selected.status === "running" ? <BriefGenerationProgress run={selected} /> : <>
           <div className="brief-reader-actions">
             {!audioUrl && <Button icon="volume" onClick={playBriefAudio} disabled={audioBusy || state.tts?.status !== "ready"}>{audioBusy ? "Generating..." : "Generate audio"}</Button>}
+            <Button icon="download" onClick={downloadBriefMarkdown} disabled={downloadBusy || !selected.artifact?.onePageBrief}>{downloadBusy ? "Saving..." : "Download Markdown"}</Button>
+            <Button icon="download" onClick={downloadBriefPdf} disabled={pdfBusy || !selected.artifact?.onePageBrief}>{pdfBusy ? "Saving..." : "Download PDF"}</Button>
             <Button icon="lenses" onClick={() => deliberateBrief(false)} disabled={deliberationBusy || !(state.briefConfig?.perspectiveLenses || []).some((lens) => lens.enabled !== false)}>{deliberationBusy ? "Deliberating..." : selected.artifact?.deliberation ? "Show deliberation" : "Deliberate brief"}</Button>
             {state.tts?.status !== "ready" && <span>Set up ElevenLabs in Settings to play briefs aloud.</span>}
           </div>
@@ -1740,6 +2113,7 @@ function Briefs({ state, runWorkflow, refresh }) {
             </label>
           </div>}
           {audioMessage && <p className={audioMessage.includes("generated") ? "ok-text" : "warn-text"}>{audioMessage}</p>}
+          {downloadMessage && <p className={downloadMessage.includes("saved") || downloadMessage.includes("started") ? "ok-text" : "warn-text"}>{downloadMessage}</p>}
           {deliberationMessage && <p className={deliberationMessage.includes("saved") || deliberationMessage.includes("regenerated") ? "ok-text" : "warn-text"}>{deliberationMessage}</p>}
           <Markdown text={selected.artifact?.onePageBrief || ""} />
           {selected.artifact?.deliberation && <DeliberationPanel deliberation={selected.artifact.deliberation} onRegenerate={() => deliberateBrief(true)} busy={deliberationBusy} />}
@@ -1750,6 +2124,26 @@ function Briefs({ state, runWorkflow, refresh }) {
         <Metric label="Avg signals" value={avgSignals} sub="per brief" />
         <Metric label="Next delivery" value={formatDeliveryTime(state.briefConfig.deliveryTime)} sub={`${state.briefConfig.deliveryFrequency} brief`} />
       </div>
+      {pendingDeleteRun && <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !deletingId) setPendingDeleteRun(null); }}>
+        <div className="modal-card destructive-modal" role="dialog" aria-modal="true" aria-labelledby="delete-brief-title">
+          <div className="modal-head">
+            <div>
+              <h2 id="delete-brief-title">Delete brief?</h2>
+              <p>This removes the saved brief from this app, including any generated audio for it.</p>
+            </div>
+            <button type="button" onClick={() => setPendingDeleteRun(null)} disabled={!!deletingId}><Icon name="x" /></button>
+          </div>
+          <div className="delete-brief-summary">
+            <strong>{briefDisplayTitle(pendingDeleteRun)}</strong>
+            <span>{pendingDeleteRun.startedAt ? new Date(pendingDeleteRun.startedAt).toLocaleString() : "Saved brief"}</span>
+          </div>
+          {deleteMessage && <p className="warn-text">{deleteMessage}</p>}
+          <div className="modal-actions">
+            <Button type="button" onClick={() => setPendingDeleteRun(null)} disabled={!!deletingId}>Cancel</Button>
+            <Button type="button" icon="trash" className="danger-button" onClick={confirmDeleteBrief} disabled={!!deletingId}>{deletingId ? "Deleting..." : "Delete brief"}</Button>
+          </div>
+        </div>
+      </div>}
     </div> : <div className="panel"><Empty icon="briefs" title="No briefs rendered" body="Generate a fresh brief from your connected sources." action={<Button icon="run" kind="accent" onClick={runWorkflow}>Generate brief</Button>} /></div>}
   </Page>;
 }
@@ -1890,11 +2284,6 @@ const setupLinks = {
     keyUrl: "https://developer.x.com/en/portal/dashboard",
     docsUrl: "https://docs.x.com/x-api/getting-started/getting-access",
     helper: "Create or open an X developer app and copy its Bearer Token. Pillar Brief uses locked quick search to keep usage small.",
-  },
-  ffmpeg: {
-    keyUrl: "https://brew.sh",
-    docsUrl: "https://formulae.brew.sh/formula/ffmpeg",
-    helper: "FFmpeg is a host-installed command-line tool. On macOS the one-click action uses Homebrew to install the ffmpeg formula.",
   },
   elevenlabs: {
     keyUrl: "https://elevenlabs.io/app/settings/api-keys",
@@ -2210,9 +2599,9 @@ function Onboarding({ state, mutate, refresh }) {
   const [xMessage, setXMessage] = React.useState("");
   const [redditConnector, setRedditConnector] = React.useState({ enabled: true, clientId: "", clientSecret: "", grantType: "installed_client", deviceId: "DO_NOT_TRACK_THIS_DEVICE" });
   const [redditMessage, setRedditMessage] = React.useState("");
-  const [ffmpegStatus, setFfmpegStatus] = React.useState(state.runtime?.ffmpeg || null);
-  const [ffmpegBusy, setFfmpegBusy] = React.useState(false);
-  const [ffmpegMessage, setFfmpegMessage] = React.useState("");
+  const [audioConverterStatus, setAudioConverterStatus] = React.useState(state.runtime?.audioConverter || null);
+  const [audioConverterBusy, setAudioConverterBusy] = React.useState(false);
+  const [audioConverterMessage, setAudioConverterMessage] = React.useState("");
   const [sttStatus, setSttStatus] = React.useState(state.runtime?.stt || null);
   const [sttBusy, setSttBusy] = React.useState(false);
   const [sttMessage, setSttMessage] = React.useState("");
@@ -2237,8 +2626,8 @@ function Onboarding({ state, mutate, refresh }) {
     await mutate("/api/onboarding", { currentStep: next, briefPrompt, sourceSuggestions: suggestions, briefConfigDraft: briefDraft }, "PATCH");
   };
   React.useEffect(() => {
-    setFfmpegStatus(state.runtime?.ffmpeg || null);
-  }, [state.runtime?.ffmpeg]);
+    setAudioConverterStatus(state.runtime?.audioConverter || null);
+  }, [state.runtime?.audioConverter]);
   React.useEffect(() => {
     setSttStatus(state.runtime?.stt || null);
   }, [state.runtime?.stt]);
@@ -2596,32 +2985,17 @@ function Onboarding({ state, mutate, refresh }) {
       setRedditMessage(error.message || "Could not save Reddit OAuth settings.");
     }
   };
-  const checkFfmpeg = async () => {
-    setFfmpegBusy(true);
-    setFfmpegMessage("");
+  const checkAudioConverter = async () => {
+    setAudioConverterBusy(true);
+    setAudioConverterMessage("");
     try {
-      const result = await api("/api/runtime/ffmpeg");
-      setFfmpegStatus(result.ffmpeg);
+      const result = await api("/api/runtime/audio-converter");
+      setAudioConverterStatus(result.audioConverter);
       await refresh();
     } catch (error) {
-      setFfmpegMessage(error.message);
+      setAudioConverterMessage(error.message);
     } finally {
-      setFfmpegBusy(false);
-    }
-  };
-  const installFfmpeg = async () => {
-    setFfmpegBusy(true);
-    setFfmpegMessage("Installing FFmpeg with Homebrew...");
-    try {
-      const result = await api("/api/runtime/ffmpeg/install", { method: "POST", body: JSON.stringify({ consent: true }) });
-      setFfmpegStatus(result.ffmpeg);
-      setFfmpegMessage(result.message || "FFmpeg install started. Re-check when it finishes.");
-      await refresh();
-    } catch (error) {
-      setFfmpegMessage(error.message);
-      await checkFfmpeg();
-    } finally {
-      setFfmpegBusy(false);
+      setAudioConverterBusy(false);
     }
   };
   const checkStt = async () => {
@@ -2655,7 +3029,7 @@ function Onboarding({ state, mutate, refresh }) {
   const skipPrerequisiteSources = async (key) => {
     const shouldSkip = (source) => {
       const keys = sourcePrerequisiteKeys(source, state);
-      if (key === "transcription") return keys.includes("ffmpeg") || keys.includes("transcriptionModel");
+      if (key === "transcription") return keys.includes("audioConverter") || keys.includes("transcriptionModel");
       return keys.includes(key);
     };
     const remaining = pendingSources.filter((source) => !shouldSkip(source));
@@ -2903,17 +3277,14 @@ function Onboarding({ state, mutate, refresh }) {
           {redditMessage && <p className={redditMessage.includes("saved") ? "ok-text" : "warn-text"}>{redditMessage}</p>}
           <div className="row"><Button type="button" onClick={() => skipPrerequisiteSources("reddit")}>Skip Reddit sources</Button><Button icon="save" kind="primary">Save Reddit OAuth</Button></div>
         </form>}
-        {(pendingPrereqKeys.includes("ffmpeg") || pendingPrereqKeys.includes("transcriptionModel")) && <div className="setup-card">
-          <div className="setup-card-head"><BrandLogo name="Podcast" /><div><h3>Podcast transcription</h3><p>Podcast sources need FFmpeg for long audio processing and either local Whisper STT or an OpenAI-compatible transcription model.</p></div><Badge tone={!pendingPrereqKeys.includes("ffmpeg") && !pendingPrereqKeys.includes("transcriptionModel") ? "ok" : "warn"}>Setup required</Badge></div>
-          {pendingPrereqKeys.includes("ffmpeg") && <div className="setup-subcard">
-            <div><strong>Install FFmpeg</strong><span>{setupLinks.ffmpeg.helper}</span></div>
+        {(pendingPrereqKeys.includes("audioConverter") || pendingPrereqKeys.includes("transcriptionModel")) && <div className="setup-card">
+          <div className="setup-card-head"><BrandLogo name="Podcast" /><div><h3>Podcast transcription</h3><p>Podcast sources use Pillar Brief's bundled audio converter plus local Whisper STT or an OpenAI-compatible transcription model.</p></div><Badge tone={!pendingPrereqKeys.includes("audioConverter") && !pendingPrereqKeys.includes("transcriptionModel") ? "ok" : "warn"}>Setup required</Badge></div>
+          {pendingPrereqKeys.includes("audioConverter") && <div className="setup-subcard">
+            <div><strong>Bundled audio converter</strong><span>{audioConverterStatus?.message || "The bundled audio converter was not detected. Reinstall the desktop app, or set PILLAR_AUDIO_CONVERT_PATH for self-hosted/server installs."}</span></div>
             <div className="setup-link-row">
-              <Button type="button" icon="external" onClick={() => openExternalUrl(setupLinks.ffmpeg.keyUrl)}>Homebrew</Button>
-              <Button type="button" icon="external" onClick={() => openExternalUrl(setupLinks.ffmpeg.docsUrl)}>FFmpeg formula</Button>
-              <Button type="button" icon="run" onClick={checkFfmpeg} disabled={ffmpegBusy}>{ffmpegBusy ? "Checking..." : "Re-check"}</Button>
-              {!ffmpegStatus?.available && ffmpegStatus?.installable && <Button type="button" icon="download" kind="primary" onClick={installFfmpeg} disabled={ffmpegBusy}>{ffmpegBusy ? "Installing..." : "Install FFmpeg"}</Button>}
+              <Button type="button" icon="run" onClick={checkAudioConverter} disabled={audioConverterBusy}>{audioConverterBusy ? "Checking..." : "Re-check"}</Button>
             </div>
-            <p className={ffmpegStatus?.available ? "ok-text" : "warn-text"}>{ffmpegMessage || ffmpegStatus?.message || "FFmpeg has not been checked yet."}</p>
+            <p className={audioConverterStatus?.available ? "ok-text" : "warn-text"}>{audioConverterMessage || audioConverterStatus?.message || "Audio conversion has not been checked yet."}</p>
           </div>}
           {pendingPrereqKeys.includes("transcriptionModel") && <div className="setup-subcard">
             <div><strong>Set up speech-to-text</strong><span>Use local Whisper STT when bundled/configured, or add an OpenAI/custom transcription endpoint. You can also skip podcast transcription sources.</span></div>
@@ -3074,9 +3445,9 @@ function Settings({ state, mutate, refresh, desktopUpdate }) {
   const [telegramForm, setTelegramForm] = React.useState({ enabled: state.telegram.enabled, botToken: state.telegram.botToken, chatId: state.telegram.chatId, allowedUsers: state.telegram.allowedUsers.join(", ") });
   const [detecting, setDetecting] = React.useState(false);
   const [detectError, setDetectError] = React.useState("");
-  const [ffmpegStatus, setFfmpegStatus] = React.useState(state.runtime?.ffmpeg || null);
-  const [ffmpegBusy, setFfmpegBusy] = React.useState(false);
-  const [ffmpegMessage, setFfmpegMessage] = React.useState("");
+  const [audioConverterStatus, setAudioConverterStatus] = React.useState(state.runtime?.audioConverter || null);
+  const [audioConverterBusy, setAudioConverterBusy] = React.useState(false);
+  const [audioConverterMessage, setAudioConverterMessage] = React.useState("");
   const [sttStatus, setSettingsSttStatus] = React.useState(state.runtime?.stt || null);
   const [sttBusy, setSettingsSttBusy] = React.useState(false);
   const [sttMessage, setSettingsSttMessage] = React.useState("");
@@ -3111,8 +3482,8 @@ function Settings({ state, mutate, refresh, desktopUpdate }) {
     setTelegramForm({ enabled: state.telegram.enabled, botToken: state.telegram.botToken, chatId: state.telegram.chatId, allowedUsers: state.telegram.allowedUsers.join(", ") });
   }, [state.telegram]);
   React.useEffect(() => {
-    setFfmpegStatus(state.runtime?.ffmpeg || null);
-  }, [state.runtime?.ffmpeg]);
+    setAudioConverterStatus(state.runtime?.audioConverter || null);
+  }, [state.runtime?.audioConverter]);
   React.useEffect(() => {
     setSettingsSttStatus(state.runtime?.stt || null);
   }, [state.runtime?.stt]);
@@ -3320,6 +3691,7 @@ function Settings({ state, mutate, refresh, desktopUpdate }) {
   const modelConnected = state.model.status === "ready";
   const xConnected = state.connectors?.x?.status === "ready";
   const redditConnected = state.connectors?.reddit?.status === "ready";
+  const audioProcessingReady = audioConverterStatus?.available;
   const googleCalendarConnected = state.connectors?.googleCalendar?.status === "ready";
   const telegramConnected = state.telegram?.enabled && state.telegram?.chatId && state.telegram?.botToken;
   const providerRows = modelProviderRows;
@@ -3339,30 +3711,16 @@ function Settings({ state, mutate, refresh, desktopUpdate }) {
     setEditingProvider(provider);
     setConnectorModal(false);
   };
-  const checkFfmpeg = async () => {
-    setFfmpegBusy(true);
-    setFfmpegMessage("");
+  const checkAudioConverter = async () => {
+    setAudioConverterBusy(true);
+    setAudioConverterMessage("");
     try {
-      const result = await api("/api/runtime/ffmpeg");
-      setFfmpegStatus(result.ffmpeg);
+      const result = await api("/api/runtime/audio-converter");
+      setAudioConverterStatus(result.audioConverter);
     } catch (error) {
-      setFfmpegMessage(error.message);
+      setAudioConverterMessage(error.message);
     } finally {
-      setFfmpegBusy(false);
-    }
-  };
-  const installFfmpeg = async () => {
-    setFfmpegBusy(true);
-    setFfmpegMessage("Installing FFmpeg with Homebrew...");
-    try {
-      const result = await api("/api/runtime/ffmpeg/install", { method: "POST", body: JSON.stringify({ consent: true }) });
-      setFfmpegStatus(result.ffmpeg);
-      setFfmpegMessage(result.message || "FFmpeg installed successfully.");
-    } catch (error) {
-      setFfmpegMessage(error.message);
-      await checkFfmpeg();
-    } finally {
-      setFfmpegBusy(false);
+      setAudioConverterBusy(false);
     }
   };
   const checkStt = async () => {
@@ -3504,7 +3862,7 @@ function Settings({ state, mutate, refresh, desktopUpdate }) {
       <section className="panel connector-card">
         <div className="connector-head">
           <div className="connector-title"><span className="connector-icon"><Icon name="settings" /></span><div><h2>Local system dependencies</h2><p>Host tools used by local-only workflows.</p></div></div>
-          <Badge tone={ffmpegStatus?.available && sttStatus?.available ? "ok" : "warn"}>{ffmpegStatus?.available && sttStatus?.available ? "Ready" : "Needs setup"}</Badge>
+          <Badge tone={audioProcessingReady && sttStatus?.available ? "ok" : "warn"}>{audioProcessingReady && sttStatus?.available ? "Ready" : "Needs setup"}</Badge>
         </div>
         <div className="connector-row dependency-row">
           <div className="connector-name"><span className="source-icon-box"><Icon name="mic" /></span><div><strong>Whisper speech-to-text</strong><small>Local STT for voice input and podcast transcription.</small></div></div>
@@ -3522,20 +3880,18 @@ function Settings({ state, mutate, refresh, desktopUpdate }) {
           {!sttStatus?.binaryAvailable && <span>For self-hosted installs, set WHISPER_CPP_PATH. For desktop releases, bundle whisper-cli in vendor/whisper/bin before building.</span>}
         </div>
         <div className="connector-row dependency-row">
-          <div className="connector-name"><span className="source-icon-box"><Icon name="Podcast" /></span><div><strong>FFmpeg</strong><small>Required for local podcast transcription.</small></div></div>
-          <span>Host binary</span>
-          <Badge tone={ffmpegStatus?.available ? "ok" : "warn"}>{ffmpegStatus?.available ? "Installed" : "Unavailable"}</Badge>
-          <span>{ffmpegStatus?.path || "Not found"}</span>
+          <div className="connector-name"><span className="source-icon-box"><Icon name="Podcast" /></span><div><strong>Podcast audio converter</strong><small>Bundled sidecar for local podcast transcription.</small></div></div>
+          <span>Bundled sidecar</span>
+          <Badge tone={audioProcessingReady ? "ok" : "warn"}>{audioProcessingReady ? "Ready" : "Unavailable"}</Badge>
+          <span>{audioConverterStatus?.path || "Not found"}</span>
           <div className="row tight-row">
-            <Button type="button" icon="run" onClick={checkFfmpeg} disabled={ffmpegBusy}>{ffmpegBusy ? "Checking..." : "Re-check"}</Button>
-            {!ffmpegStatus?.available && ffmpegStatus?.installable && <Button type="button" icon="download" kind="primary" onClick={installFfmpeg} disabled={ffmpegBusy}>{ffmpegBusy ? "Installing..." : "Install FFmpeg"}</Button>}
+            <Button type="button" icon="run" onClick={checkAudioConverter} disabled={audioConverterBusy}>{audioConverterBusy ? "Checking..." : "Re-check"}</Button>
           </div>
         </div>
-        <div className={`notice ${ffmpegStatus?.available ? "" : "notice-warn"}`}>
-          <strong>{ffmpegStatus?.available ? "Podcast transcription is enabled" : "Podcast transcription is disabled"}</strong>
-          <span>{ffmpegStatus?.message || "Checking FFmpeg availability..."}</span>
-          {!ffmpegStatus?.available && !ffmpegStatus?.homebrewAvailable && <span>Homebrew is required for the one-click macOS installer. Install it from brew.sh, then return here.</span>}
-          {ffmpegMessage && <span>{ffmpegMessage}</span>}
+        <div className={`notice ${audioProcessingReady ? "" : "notice-warn"}`}>
+          <strong>{audioProcessingReady ? "Podcast audio conversion is enabled" : "Podcast audio conversion is disabled"}</strong>
+          <span>{audioConverterMessage || audioConverterStatus?.message || "Checking audio conversion availability..."}</span>
+          {!audioConverterStatus?.available && <span>Reinstall the desktop app, or set PILLAR_AUDIO_CONVERT_PATH for self-hosted/server installs.</span>}
         </div>
       </section>
 

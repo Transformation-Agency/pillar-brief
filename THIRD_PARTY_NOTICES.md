@@ -3,6 +3,29 @@
 Pillar Brief includes or can package the following third-party components for
 local speech-to-text support.
 
+## Symphonia
+
+- Project: Symphonia
+- Upstream: https://github.com/pdeljanov/Symphonia
+- Used by: `src-tauri/audio-convert`
+- Purpose: Decoding common podcast/audio formats for the bundled audio
+  converter sidecar.
+- License: MPL-2.0
+
+The MPL-2.0 license text for Symphonia is available at:
+https://github.com/pdeljanov/Symphonia/blob/master/LICENSE
+
+## hound
+
+- Project: hound
+- Upstream: https://github.com/ruuda/hound
+- Used by: `src-tauri/audio-convert`
+- Purpose: Writing mono 16 kHz PCM WAV chunks for whisper.cpp transcription.
+- License: Apache-2.0
+
+The Apache-2.0 license text for hound is available at:
+https://github.com/ruuda/hound/blob/master/LICENSE
+
 ## whisper.cpp / ggml
 
 - Project: whisper.cpp

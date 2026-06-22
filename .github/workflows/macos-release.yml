@@ -65,6 +65,15 @@ jobs:
       - name: Install dependencies
         run: npm ci --no-audit --no-fund
 
+      - name: Release preflight
+        run: |
+          set -euo pipefail
+          node scripts/verify-release-version.mjs
+          npm run check
+          node --check server/index.js
+          cargo check --manifest-path src-tauri/Cargo.toml --target "${{ matrix.target }}"
+          cargo check --manifest-path src-tauri/audio-convert/Cargo.toml --target "${{ matrix.target }}"
+
       - name: Provide x64 Node sidecar
         if: matrix.target == 'x86_64-apple-darwin'
         # The backend sidecar is a copy of a Node binary. The runner's Node is
@@ -128,6 +137,17 @@ jobs:
         # notarized again below.
         run: npm run desktop:build -- --target "${{ matrix.target }}" --config src-tauri/tauri.ci.conf.json
 
+      - name: Verify macOS bundle contents
+        run: |
+          set -euo pipefail
+          app="$(find "src-tauri/target/${{ matrix.target }}/release/bundle/macos" -maxdepth 1 -name '*.app' -print -quit)"
+          test -n "$app"
+          test -x "$app/Contents/MacOS/pillar-brief-backend"
+          test -x "$app/Contents/MacOS/pillar-audio-convert"
+          test -x "$app/Contents/MacOS/whisper-cli"
+          test -f "$app/Contents/Resources/resources/whisper/models/ggml-tiny.en.bin"
+          codesign --verify --deep --strict --verbose=2 "$app"
+
       - name: Notarize and staple DMG
         env:
           APPLE_ID: ${{ secrets.APPLE_ID }}
@@ -154,6 +174,7 @@ jobs:
           updater="$(find "src-tauri/target/${{ matrix.target }}/release/bundle/macos" -name '*.app.tar.gz' -print -quit)"
           test -n "$updater"
           test -f "${updater}.sig"
+          test -n "$dmg"
           asset="release/Pillar.Brief_${version}_${{ matrix.suffix }}.dmg"
           updater_asset="release/Pillar.Brief_${version}_${{ matrix.suffix }}.app.tar.gz"
           cp "$dmg" "$asset"

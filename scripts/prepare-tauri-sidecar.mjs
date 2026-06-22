@@ -7,6 +7,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, "..");
 const tauriDir = path.join(root, "src-tauri");
 const resourcesDir = path.join(tauriDir, "resources");
+const audioConvertDir = path.join(tauriDir, "audio-convert");
 const backendDir = path.join(resourcesDir, "backend");
 const whisperResourcesDir = path.join(resourcesDir, "whisper");
 const whisperVendorDir = process.env.PILLAR_WHISPER_VENDOR_DIR || path.join(root, "vendor", "whisper");
@@ -14,6 +15,7 @@ const binariesDir = path.join(tauriDir, "binaries");
 const sidecarName = "pillar-brief-backend";
 const legacySidecarName = "jack-daily-brief-backend";
 const whisperSidecarName = "whisper-cli";
+const audioConvertSidecarName = "pillar-audio-convert";
 const backendRuntimeDependencies = ["express"];
 
 function rmrf(target) {
@@ -121,6 +123,37 @@ function copyNodeSidecar(filePath) {
   fs.chmodSync(filePath, 0o755);
 }
 
+function audioConvertCandidatePath(hostTriple) {
+  if (process.env.PILLAR_AUDIO_CONVERT_PATH) return process.env.PILLAR_AUDIO_CONVERT_PATH;
+  const targetDir = process.env.CARGO_BUILD_TARGET || process.env.PILLAR_TARGET_TRIPLE
+    ? path.join(audioConvertDir, "target", hostTriple, "release")
+    : path.join(audioConvertDir, "target", "release");
+  return path.join(targetDir, `${audioConvertSidecarName}${exeSuffix}`);
+}
+
+function buildAudioConvertSidecar(hostTriple) {
+  if (process.env.PILLAR_AUDIO_CONVERT_PATH && fs.existsSync(process.env.PILLAR_AUDIO_CONVERT_PATH)) {
+    return process.env.PILLAR_AUDIO_CONVERT_PATH;
+  }
+  const args = [
+    "build",
+    "--manifest-path",
+    path.join(audioConvertDir, "Cargo.toml"),
+    "--bin",
+    audioConvertSidecarName,
+    "--release",
+  ];
+  if (process.env.CARGO_BUILD_TARGET || process.env.PILLAR_TARGET_TRIPLE) {
+    args.push("--target", hostTriple);
+  }
+  execFileSync("cargo", args, { stdio: "inherit" });
+  const binaryPath = audioConvertCandidatePath(hostTriple);
+  if (!fs.existsSync(binaryPath)) {
+    throw new Error(`Audio converter sidecar was not built at ${binaryPath}.`);
+  }
+  return binaryPath;
+}
+
 function normalizeWhisperArtifacts(dir) {
   if (!fs.existsSync(dir)) return;
   for (const entry of fs.readdirSync(dir, { recursive: true, withFileTypes: true })) {
@@ -207,11 +240,17 @@ for (const file of fs.readdirSync(binariesDir)) {
   if (
     file.startsWith(`${sidecarName}-`) ||
     file.startsWith(`${legacySidecarName}-`) ||
-    file.startsWith(`${whisperSidecarName}-`)
+    file.startsWith(`${whisperSidecarName}-`) ||
+    file.startsWith(`${audioConvertSidecarName}-`)
   ) rmrf(path.join(binariesDir, file));
 }
 
 copyNodeSidecar(path.join(binariesDir, `${sidecarName}-${hostTriple}${exeSuffix}`));
+const audioConvertBinary = buildAudioConvertSidecar(hostTriple);
+const audioConvertSidecarPath = path.join(binariesDir, `${audioConvertSidecarName}-${hostTriple}${exeSuffix}`);
+copyBundleAsset(audioConvertBinary, audioConvertSidecarPath);
+fs.chmodSync(audioConvertSidecarPath, 0o755);
+adHocSign(audioConvertSidecarPath);
 if (fs.existsSync(whisperVendorDir)) {
   const vendorWhisperBinary = process.env.PILLAR_WHISPER_CLI_PATH || path.join(whisperVendorDir, "bin", "whisper-cli");
   if (fs.existsSync(vendorWhisperBinary)) {

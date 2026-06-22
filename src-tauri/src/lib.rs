@@ -22,6 +22,30 @@ const SIDECAR_PREFIX: &str = "pillar-brief-backend";
 
 struct BackendProcess(Mutex<Option<Child>>);
 
+#[tauri::command]
+fn save_text_file(path: String, contents: String) -> Result<(), String> {
+    let mut file = OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .write(true)
+        .open(PathBuf::from(path))
+        .map_err(|error| format!("Could not create the selected file: {error}"))?;
+    file.write_all(contents.as_bytes())
+        .map_err(|error| format!("Could not write the selected file: {error}"))
+}
+
+#[tauri::command]
+fn save_binary_file(path: String, bytes: Vec<u8>) -> Result<(), String> {
+    let mut file = OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .write(true)
+        .open(PathBuf::from(path))
+        .map_err(|error| format!("Could not create the selected file: {error}"))?;
+    file.write_all(&bytes)
+        .map_err(|error| format!("Could not write the selected file: {error}"))
+}
+
 fn project_root() -> PathBuf {
     if let Ok(root) = std::env::var("PILLAR_PROJECT_ROOT") {
         return PathBuf::from(root);
@@ -484,7 +508,10 @@ pub fn run() {
         ))
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_fs::init())
         .manage(BackendProcess(Mutex::new(None)))
+        .invoke_handler(tauri::generate_handler![save_text_file, save_binary_file])
         .setup(|app| {
             let backend_result = spawn_backend(app).and_then(|mut child| {
                 if let Err(error) = wait_for_backend(BACKEND_PORT, Duration::from_secs(20)) {

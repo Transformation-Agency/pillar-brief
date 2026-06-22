@@ -38,6 +38,31 @@ jobs:
         # platform-specific optional deps (long-standing npm bug).
         run: npm install --no-audit --no-fund
 
+      - name: Release preflight
+        shell: pwsh
+        run: |
+          node scripts/verify-release-version.mjs
+          npm run check
+          node --check server/index.js
+          cargo check --manifest-path src-tauri/Cargo.toml
+          cargo check --manifest-path src-tauri/audio-convert/Cargo.toml
+
+      - name: Build static whisper-cli
+        shell: pwsh
+        run: |
+          git clone --depth 1 --branch v1.8.5 https://github.com/ggml-org/whisper.cpp.git "$env:RUNNER_TEMP\whisper.cpp"
+          cmake -S "$env:RUNNER_TEMP\whisper.cpp" -B "$env:RUNNER_TEMP\whisper-build" `
+            -A x64 `
+            -DCMAKE_BUILD_TYPE=Release `
+            -DBUILD_SHARED_LIBS=OFF `
+            -DGGML_NATIVE=OFF `
+            -DWHISPER_BUILD_TESTS=OFF `
+            -DWHISPER_BUILD_SERVER=OFF
+          cmake --build "$env:RUNNER_TEMP\whisper-build" --config Release --target whisper-cli
+          $whisperCli = Get-ChildItem "$env:RUNNER_TEMP\whisper-build" -Recurse -Filter whisper-cli.exe | Select-Object -First 1
+          if (-not $whisperCli) { throw "whisper-cli.exe was not built" }
+          echo "PILLAR_WHISPER_CLI_PATH=$($whisperCli.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
       - name: Configure Azure Trusted Signing
         shell: pwsh
         run: |
@@ -55,6 +80,19 @@ jobs:
 
       - name: Build desktop app (signed)
         run: npm run desktop:build -- --config src-tauri/tauri.sign.conf.json
+
+      - name: Verify Windows bundle inputs
+        shell: pwsh
+        run: |
+          $required = @(
+            "src-tauri/binaries/pillar-brief-backend-x86_64-pc-windows-msvc.exe",
+            "src-tauri/binaries/pillar-audio-convert-x86_64-pc-windows-msvc.exe",
+            "src-tauri/binaries/whisper-cli-x86_64-pc-windows-msvc.exe",
+            "src-tauri/resources/whisper/models/ggml-tiny.en.bin"
+          )
+          foreach ($path in $required) {
+            if (-not (Test-Path $path)) { throw "Missing release bundle input: $path" }
+          }
 
       - name: Prepare release assets
         shell: pwsh

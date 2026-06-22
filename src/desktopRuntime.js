@@ -1,5 +1,6 @@
-import { isTauri } from "@tauri-apps/api/core";
+import { invoke, isTauri } from "@tauri-apps/api/core";
 import { getVersion } from "@tauri-apps/api/app";
+import { save } from "@tauri-apps/plugin-dialog";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { check } from "@tauri-apps/plugin-updater";
 
@@ -35,5 +36,29 @@ export const desktopRuntime = {
   async restartApp() {
     if (!isTauri()) return;
     await relaunch();
+  },
+  async saveTextFile({ title = "Save file", defaultPath = "download.txt", contents = "", filters = [] } = {}) {
+    if (!isTauri()) return null;
+    const filePath = await save({
+      title,
+      defaultPath,
+      filters,
+      canCreateDirectories: true,
+    });
+    if (!filePath) return null;
+    await invoke("save_text_file", { path: filePath, contents });
+    return filePath;
+  },
+  async saveBinaryFile({ title = "Save file", defaultPath = "download.bin", bytes, filters = [] } = {}) {
+    if (!isTauri()) return null;
+    const filePath = await save({
+      title,
+      defaultPath,
+      filters,
+      canCreateDirectories: true,
+    });
+    if (!filePath) return null;
+    await invoke("save_binary_file", { path: filePath, bytes: Array.from(bytes || []) });
+    return filePath;
   },
 };

@@ -77,8 +77,34 @@ jobs:
       - name: Generate latest.json
         run: node scripts/generate-updater-manifest.mjs
 
+      - name: Validate latest.json
+        shell: bash
+        run: |
+          set -euo pipefail
+          node -e '
+            const fs = require("fs");
+            const manifest = JSON.parse(fs.readFileSync("release/latest.json", "utf8"));
+            const version = process.env.VERSION;
+            const expected = {
+              "darwin-aarch64": `Pillar.Brief_${version}_aarch64.app.tar.gz`,
+              "darwin-x86_64": `Pillar.Brief_${version}_x64.app.tar.gz`,
+              "windows-x86_64": `Pillar.Brief_${version}_x64-setup.exe`,
+            };
+            if (manifest.version !== version) throw new Error(`Expected version ${version}, got ${manifest.version}`);
+            for (const [platform, asset] of Object.entries(expected)) {
+              const entry = manifest.platforms?.[platform];
+              if (!entry) throw new Error(`Missing platform ${platform}`);
+              if (!entry.url?.endsWith(`/${asset}`)) throw new Error(`Bad URL for ${platform}: ${entry.url}`);
+              if (!entry.signature) throw new Error(`Missing signature for ${platform}`);
+            }
+          '
+
       - name: Upload latest.json
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
-        run: gh release upload "$RELEASE_TAG" release/latest.json --repo "$GITHUB_REPOSITORY" --clobber
+        run: |
+          gh release upload "$RELEASE_TAG" release/latest.json --repo "$GITHUB_REPOSITORY" --clobber
+          tmp="$(mktemp -d)"
+          gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --pattern latest.json --dir "$tmp" --clobber
+          test -s "$tmp/latest.json"

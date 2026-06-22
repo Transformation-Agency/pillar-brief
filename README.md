@@ -15,13 +15,13 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/Transformation-Agency/pillar-brief/releases/download/v0.1.5/Pillar.Brief_0.1.5_aarch64.dmg">
+  <a href="https://github.com/Transformation-Agency/pillar-brief/releases/download/v0.1.6/Pillar.Brief_0.1.6_aarch64.dmg">
     <img src="https://img.shields.io/badge/Download-M--series%20Macs-black?style=for-the-badge&logo=apple" alt="Download for M-series Macs" />
   </a>
-  <a href="https://github.com/Transformation-Agency/pillar-brief/releases/download/v0.1.5/Pillar.Brief_0.1.5_x64.dmg">
+  <a href="https://github.com/Transformation-Agency/pillar-brief/releases/download/v0.1.6/Pillar.Brief_0.1.6_x64.dmg">
     <img src="https://img.shields.io/badge/Download-Intel%20Macs-333333?style=for-the-badge&logo=apple" alt="Download for Intel Macs" />
   </a>
-  <a href="https://github.com/Transformation-Agency/pillar-brief/releases/download/v0.1.5/Pillar.Brief_0.1.5_x64-setup.exe">
+  <a href="https://github.com/Transformation-Agency/pillar-brief/releases/download/v0.1.6/Pillar.Brief_0.1.6_x64-setup.exe">
     <img src="https://img.shields.io/badge/Download-Windows-0078D4?style=for-the-badge" alt="Download for Windows" />
   </a>
 </p>
@@ -40,13 +40,14 @@
 
 ## Latest Release
 
-**v0.1.5** fixes signed desktop update checks:
+**v0.1.6** adds briefing controls and export polish:
 
-- Restores app version detection in the desktop Settings update panel.
-- Fixes signed update checks from the local desktop webview.
-- Shows explicit updater errors instead of a generic failed state.
-- Keeps updater installation/restart actions available for future releases.
-- Users on v0.1.4 may need to install v0.1.5 manually once; future updates should work in-app.
+- Adds brief deletion with confirmation for cleaning up test runs.
+- Adds concise, standard, detailed, and custom publishing controls in Brief Setup.
+- Adds Markdown and styled PDF export with native desktop save dialogs.
+- Improves the audio player layout across compact and expanded windows.
+- Removes the FFmpeg installer dependency in favor of bundled local audio conversion.
+- Hardens release builds for macOS, Windows, and signed updater artifacts.
 
 See all versions on the
 [GitHub releases page](https://github.com/Transformation-Agency/pillar-brief/releases).
@@ -76,8 +77,10 @@ and Telegram destination.
 - Locked X quick mode to reduce API usage
 - Today-only source selection for generated briefs
 - Editable brief setup with section-level prompts
+- Publishing style and length controls for concise, standard, detailed, or custom briefs
 - Scheduled and manual generation
 - Data backup and destructive reset controls in Settings
+- Markdown and PDF exports for saved briefs
 - Automatic Telegram delivery in Markdown
 - Signed desktop updates for Tauri builds distributed through GitHub Releases
 - Tauri desktop packaging for local macOS and Windows apps
@@ -89,7 +92,7 @@ and Telegram destination.
 - Required: Node.js 24 or newer
 - Required: npm
 - Optional for desktop: Rust and Tauri platform prerequisites
-- Optional for podcast transcription: FFmpeg
+- Included in desktop builds: bundled podcast audio converter
 - Optional for local speech-to-text: whisper.cpp `whisper-cli` and a ggml model
 - Optional integrations: OpenAI, Anthropic, OpenRouter, Telegram, and X
 
@@ -128,27 +131,13 @@ For full setup instructions, see the
 ### Podcast Transcription
 
 Podcast transcription can use local whisper.cpp speech-to-text or an
-OpenAI-compatible cloud transcription fallback. Long podcast audio also
-requires FFmpeg so the server can split/convert media before transcription.
+OpenAI-compatible cloud transcription fallback. Desktop builds include
+Pillar Brief's bundled audio converter for splitting and converting podcast
+media before transcription.
 
-macOS:
-
-```bash
-brew install ffmpeg
-```
-
-Ubuntu/Debian:
-
-```bash
-sudo apt update
-sudo apt install ffmpeg
-```
-
-Verify:
-
-```bash
-ffmpeg -version
-```
+For self-hosted/server installs that do not use the Tauri desktop bundle, build
+or provide the converter sidecar and set `PILLAR_AUDIO_CONVERT_PATH` if it is
+not on `PATH`.
 
 ### Local Speech-To-Text
 

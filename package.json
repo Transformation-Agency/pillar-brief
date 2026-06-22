@@ -1,6 +1,6 @@
 {
   "name": "pillar-brief",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "type": "module",
   "scripts": {
     "dev": "NODE_OPTIONS=--no-warnings node server/index.js",
@@ -17,6 +17,8 @@
   "dependencies": {
     "@emnapi/core": "^1.11.1",
     "@emnapi/runtime": "^1.11.1",
+    "@tauri-apps/plugin-dialog": "^2.7.1",
+    "@tauri-apps/plugin-fs": "^2.5.1",
     "@tauri-apps/plugin-process": "^2.3.1",
     "@tauri-apps/plugin-updater": "^2.10.1",
     "@vitejs/plugin-react": "^6.0.2",
