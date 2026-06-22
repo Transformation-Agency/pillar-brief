@@ -15,13 +15,13 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/Transformation-Agency/pillar-brief/releases/download/v0.1.3/Pillar.Brief_0.1.3_aarch64.dmg">
+  <a href="https://github.com/Transformation-Agency/pillar-brief/releases/download/v0.1.4/Pillar.Brief_0.1.4_aarch64.dmg">
     <img src="https://img.shields.io/badge/Download-M--series%20Macs-black?style=for-the-badge&logo=apple" alt="Download for M-series Macs" />
   </a>
-  <a href="https://github.com/Transformation-Agency/pillar-brief/releases/download/v0.1.3/Pillar.Brief_0.1.3_x64.dmg">
+  <a href="https://github.com/Transformation-Agency/pillar-brief/releases/download/v0.1.4/Pillar.Brief_0.1.4_x64.dmg">
     <img src="https://img.shields.io/badge/Download-Intel%20Macs-333333?style=for-the-badge&logo=apple" alt="Download for Intel Macs" />
   </a>
-  <a href="https://github.com/Transformation-Agency/pillar-brief/releases/download/v0.1.3/Pillar.Brief_0.1.3_x64-setup.exe">
+  <a href="https://github.com/Transformation-Agency/pillar-brief/releases/download/v0.1.4/Pillar.Brief_0.1.4_x64-setup.exe">
     <img src="https://img.shields.io/badge/Download-Windows-0078D4?style=for-the-badge" alt="Download for Windows" />
   </a>
 </p>
@@ -40,13 +40,13 @@
 
 ## Latest Release
 
-**v0.1.3** adds Google Calendar agenda context and signed desktop updates:
+**v0.1.4** adds a cleaner starter setup, crypto market snapshots, and safer data controls:
 
-- Optional Google Calendar onboarding and Settings flow with read-only agenda access.
-- A new editable "Today's Calendar" brief section that appears first when Calendar is connected.
-- Secretless desktop Google OAuth using the installed-app PKCE flow.
-- In-app signed update checks, install, and restart actions from Settings and the Help menu.
-- Refreshed Pillar Brief branding and the actual Google Calendar connector icon.
+- Recommended source library with review, select-all, and prerequisite callouts before sources run.
+- CoinGecko crypto price sources with searchable asset selection.
+- Backup and erase-all-data controls in Settings, including desktop backup saves to Downloads.
+- Google Calendar source fixes so selected calendars stay selected and agenda items appear first in Brief Setup.
+- Source onboarding polish for optional integrations and setup-dependent sources.
 
 See all versions on the
 [GitHub releases page](https://github.com/Transformation-Agency/pillar-brief/releases).
@@ -65,18 +65,19 @@ and Telegram destination.
 ## Features
 
 - First-run onboarding for name, model key, brief intent, suggested sources,
-  Telegram pairing, and delivery schedule
+  optional starter source library, Google Calendar, Telegram pairing, and delivery schedule
 - Local SQLite storage for settings, sources, brief artifacts, run history, and
   audit logs
 - OpenAI, Anthropic, OpenRouter, Gemini, and custom OpenAI-compatible model settings
-- Source adapters for RSS, web pages, Reddit, X search, podcasts, YouTube, and
-  newsletters
+- Source adapters for RSS, web pages, Reddit, X search, podcasts, YouTube,
+  newsletters, Google Calendar, and CoinGecko crypto prices
 - Optional Google Calendar agenda context for today's meetings, prep, conflicts,
   focus windows, and follow-ups
 - Locked X quick mode to reduce API usage
 - Today-only source selection for generated briefs
 - Editable brief setup with section-level prompts
 - Scheduled and manual generation
+- Data backup and destructive reset controls in Settings
 - Automatic Telegram delivery in Markdown
 - Signed desktop updates for Tauri builds distributed through GitHub Releases
 - Tauri desktop packaging for local macOS and Windows apps

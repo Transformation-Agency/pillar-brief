@@ -88,8 +88,35 @@ function targetTriple() {
 
 const exeSuffix = process.platform === "win32" ? ".exe" : "";
 
+function nodeMajorVersion(nodeBinary) {
+  try {
+    const version = execFileSync(nodeBinary, ["--version"], { encoding: "utf8" }).trim();
+    return Number(/^v?(\d+)/.exec(version)?.[1] || 0);
+  } catch {
+    return 0;
+  }
+}
+
+function nodeSidecarCandidates() {
+  return [
+    process.env.PILLAR_NODE_SIDECAR_PATH,
+    process.execPath,
+    path.join(process.env.NVM_DIR || path.join(process.env.HOME || "", ".nvm"), "versions", "node", "v24.16.0", "bin", `node${exeSuffix}`),
+    path.join(process.env.NVM_DIR || path.join(process.env.HOME || "", ".nvm"), "versions", "node", "v24.10.0", "bin", `node${exeSuffix}`),
+    "/opt/homebrew/bin/node",
+    "/usr/local/bin/node",
+  ].filter(Boolean);
+}
+
+function resolveNodeSidecar() {
+  for (const candidate of nodeSidecarCandidates()) {
+    if (fs.existsSync(candidate) && nodeMajorVersion(candidate) >= 24) return candidate;
+  }
+  throw new Error("Pillar Brief desktop packaging requires a Node 24+ sidecar because the backend uses node:sqlite. Set PILLAR_NODE_SIDECAR_PATH to a Node 24+ binary.");
+}
+
 function copyNodeSidecar(filePath) {
-  const nodeBinary = process.env.PILLAR_NODE_SIDECAR_PATH || process.execPath;
+  const nodeBinary = resolveNodeSidecar();
   fs.copyFileSync(nodeBinary, filePath);
   fs.chmodSync(filePath, 0o755);
 }

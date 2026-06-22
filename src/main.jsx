@@ -5,6 +5,7 @@ import {
   BookOpen,
   Bot,
   Box,
+  Bitcoin,
   Calendar,
   Check,
   ChevronDown,
@@ -129,6 +130,12 @@ const sourceDefinitions = {
       google: { label: "Selected Google calendars", fields: [] },
     },
   },
+  Crypto: {
+    credential: "No key required for v1. Uses CoinGecko public market data to add a structured price snapshot to each brief run.",
+    modes: {
+      coingecko: { label: "CoinGecko market prices", fields: [] },
+    },
+  },
   Newsletter: {
     credential: "Usually RSS/archive URL based. Private inbox newsletters need a separate email integration, not a generic locator.",
     modes: {
@@ -147,12 +154,16 @@ const sourceDefinitions = {
 
 function defaultConfig(type) {
   const mode = Object.keys(sourceDefinitions[type].modes)[0];
+  if (type === "Crypto") {
+    return { mode, provider: "coingecko", coins: [], vsCurrency: "usd", includeMarketCap: true, include24hVolume: true, include24hChange: true };
+  }
   return { mode };
 }
 
 function sourceLocator(type, config) {
   const mode = config.mode;
   if (type === "Calendar") return config.calendarId === "primary" ? "primary" : "selected";
+  if (type === "Crypto") return `coingecko:${(config.coins || []).map((coin) => coin.id).filter(Boolean).join(",")}`;
   if (type === "Reddit") {
     if (mode === "subreddit") return `subreddits:${config.subreddits || ""}`;
     if (mode === "user") return `u/${config.username || ""}`;
@@ -180,6 +191,14 @@ function sourcePrerequisites(source, state) {
       blocking: true,
       label: "Needs X API token",
       body: "Set up an X developer Bearer Token before this source can fetch posts.",
+    });
+  }
+  if (source.type === "Reddit" && source.config?.requiresOAuth && state.connectors?.reddit?.status !== "ready") {
+    notes.push({
+      key: "reddit",
+      blocking: true,
+      label: "Needs Reddit OAuth",
+      body: "Set up a Reddit app client ID before this suggested catalog source can use the official API.",
     });
   }
   if (source.type === "Podcast" && source.config?.transcribeNewEpisodes !== false) {
@@ -297,6 +316,10 @@ function sourceDisplayLocator(source) {
   }
   if (source.type === "Web" && config.mode === "search") return `Search: ${displaySearchText(config.query || source.locator)}`;
   if (source.type === "YouTube" && config.query) return `Search: ${displaySearchText(config.query)}`;
+  if (source.type === "Crypto") {
+    const coins = Array.isArray(config.coins) ? config.coins : [];
+    return coins.length ? coins.map((coin) => coin.symbol ? coin.symbol.toUpperCase() : coin.name || coin.id).join(", ") : "CoinGecko prices";
+  }
   return displaySearchText(source.locator || config.feedUrl || config.url || config.channel || config.playlistId || config.spotifyUrl || "Configured source");
 }
 
@@ -328,6 +351,9 @@ function Icon({ name }) {
     upload: Upload,
     box: Box,
     Calendar,
+    Database,
+    Crypto: Bitcoin,
+    "Crypto Prices": Bitcoin,
     calendar: Calendar,
     help: CircleHelp,
     clock: Clock,
@@ -882,10 +908,21 @@ function ListRow({ title, sub, right }) {
   return <div className="list-row"><div><strong>{title}</strong><small>{sub}</small></div>{right}</div>;
 }
 
-function Sources({ state, mutate }) {
+function Sources({ state, mutate, refresh }) {
   const [form, setForm] = React.useState({ name: "", type: "RSS", config: defaultConfig("RSS") });
   const [query, setQuery] = React.useState("");
   const [adding, setAdding] = React.useState(false);
+  const [libraryOpen, setLibraryOpen] = React.useState(false);
+  const [librarySources, setLibrarySources] = React.useState([]);
+  const [librarySelected, setLibrarySelected] = React.useState(new Set());
+  const [libraryQuery, setLibraryQuery] = React.useState("");
+  const [libraryType, setLibraryType] = React.useState("All");
+  const [libraryLoading, setLibraryLoading] = React.useState(false);
+  const [libraryMessage, setLibraryMessage] = React.useState("");
+  const [coinQuery, setCoinQuery] = React.useState("");
+  const [coinResults, setCoinResults] = React.useState([]);
+  const [coinSearching, setCoinSearching] = React.useState(false);
+  const [coinMessage, setCoinMessage] = React.useState("");
   const [editingSource, setEditingSource] = React.useState(null);
   const [spotifyResolve, setSpotifyResolve] = React.useState({ loading: false, message: "", tone: "muted" });
   const [transcribing, setTranscribing] = React.useState({});
@@ -897,19 +934,30 @@ function Sources({ state, mutate }) {
   const definition = sourceDefinitions[form.type];
   const mode = definition.modes[form.config.mode] ? form.config.mode : Object.keys(definition.modes)[0];
   const modeDefinition = definition.modes[mode];
-  const updateType = (type) => setForm({ ...form, type, config: defaultConfig(type) });
+  const updateType = (type) => {
+    setForm({ ...form, type, config: defaultConfig(type) });
+    setCoinQuery("");
+    setCoinResults([]);
+    setCoinMessage("");
+  };
   const updateConfig = (key, value) => setForm({ ...form, config: { ...form.config, mode, [key]: value } });
   const resetSourceForm = () => {
     setForm({ name: "", type: "RSS", config: defaultConfig("RSS") });
     setAdding(false);
     setEditingSource(null);
     setSpotifyResolve({ loading: false, message: "", tone: "muted" });
+    setCoinQuery("");
+    setCoinResults([]);
+    setCoinMessage("");
   };
   const openAddSource = () => {
     setForm({ name: "", type: "RSS", config: defaultConfig("RSS") });
     setEditingSource(null);
     setAdding(true);
     setSpotifyResolve({ loading: false, message: "", tone: "muted" });
+    setCoinQuery("");
+    setCoinResults([]);
+    setCoinMessage("");
   };
   const openEditSource = (source) => {
     const config = { ...defaultConfig(source.type), ...(source.config || {}) };
@@ -927,6 +975,23 @@ function Sources({ state, mutate }) {
     setEditingSource(source);
     setAdding(true);
     setSpotifyResolve({ loading: false, message: "", tone: "muted" });
+    setCoinQuery("");
+    setCoinResults([]);
+    setCoinMessage("");
+  };
+  const openSourceLibrary = async () => {
+    setLibraryOpen(true);
+    setLibraryMessage("");
+    if (librarySources.length) return;
+    setLibraryLoading(true);
+    try {
+      const result = await api("/api/source-library");
+      setLibrarySources(result.sources || []);
+    } catch (error) {
+      setLibraryMessage(error.message || "Could not load the recommended source library.");
+    } finally {
+      setLibraryLoading(false);
+    }
   };
   React.useEffect(() => {
     const pending = sessionStorage.getItem("pendingSourceType");
@@ -965,8 +1030,47 @@ function Sources({ state, mutate }) {
       setSpotifyResolve({ loading: false, message: error.message, tone: "warn" });
     }
   };
+  const searchCoins = async (event) => {
+    event?.preventDefault();
+    const q = coinQuery.trim();
+    setCoinMessage("");
+    if (q.length < 2) {
+      setCoinMessage("Type at least two characters to search CoinGecko.");
+      return;
+    }
+    setCoinSearching(true);
+    try {
+      const result = await api(`/api/crypto/coingecko/search?q=${encodeURIComponent(q)}`);
+      setCoinResults(result.coins || []);
+      if (!(result.coins || []).length) setCoinMessage("No CoinGecko coins matched that search.");
+    } catch (error) {
+      setCoinMessage(error.message || "Could not search CoinGecko.");
+    } finally {
+      setCoinSearching(false);
+    }
+  };
+  const addCoin = (coin) => {
+    const current = Array.isArray(form.config.coins) ? form.config.coins : [];
+    if (current.some((item) => item.id === coin.id)) return;
+    const nextCoins = [...current, { id: coin.id, symbol: coin.symbol, name: coin.name, image: coin.thumb || coin.large || "" }].slice(0, 25);
+    setForm((currentForm) => ({
+      ...currentForm,
+      name: currentForm.name || `Crypto Prices: ${nextCoins.map((item) => item.symbol || item.id).join(", ").toUpperCase()}`,
+      config: { ...currentForm.config, coins: nextCoins },
+    }));
+  };
+  const removeCoin = (coinId) => {
+    setForm((currentForm) => ({
+      ...currentForm,
+      config: { ...currentForm.config, coins: (currentForm.config.coins || []).filter((coin) => coin.id !== coinId) },
+    }));
+  };
   const submit = (e) => {
     e.preventDefault();
+    if (form.type === "Crypto" && !(form.config.coins || []).length) {
+      setCoinMessage("Select at least one CoinGecko asset.");
+      return;
+    }
     const locator = sourceLocator(form.type, { ...form.config, mode });
     const payload = { ...form, locator, config: { ...form.config, mode } };
     const endpoint = editingSource ? `/api/sources/${editingSource.id}` : "/api/sources";
@@ -1005,6 +1109,7 @@ function Sources({ state, mutate }) {
     ["YouTube", "YouTube"],
     ["Newsletter", "Journal / Library"],
     ["Podcast", "Podcast"],
+    ["Crypto", "Crypto prices"],
     ["Reddit", "Reddit"],
     ["Calendar", "Calendar"],
   ];
@@ -1015,19 +1120,21 @@ function Sources({ state, mutate }) {
   return <Page
     title="Sources"
     desc="Add and manage the feeds, accounts, and searches your brief monitors. External fetches stay disabled until credentials or adapter support are present."
-    action={<Button icon="plus" kind="primary" onClick={openAddSource}>Add source</Button>}
+    action={<div className="page-actions"><Button icon="templates" onClick={openSourceLibrary}>Recommended source library</Button><Button icon="plus" kind="primary" onClick={openAddSource}>Add source</Button></div>}
     wide
   >
     <div className="sources-workspace">
       <section className="panel sources-table-card">
         <div className="table-title-row"><h2>Your sources</h2><label className="table-search"><Icon name="search" /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search sources..." /></label></div>
         {transcribeMessage && <div className="notice source-transcribe-message"><span>{transcribeMessage}</span></div>}
-        {state.sources.length ? <table className="source-table simplified"><thead><tr><th>Source</th><th>Type</th><th>Credentials</th><th></th></tr></thead><tbody>{filteredSources.map((s) => {
+        {state.sources.length ? <table className="source-table simplified"><thead><tr><th>Source</th><th>Type</th><th>Status</th><th>Credentials</th><th></th></tr></thead><tbody>{filteredSources.map((s) => {
         const credential = sourceCredentialLabel(s);
         const displayLocator = sourceDisplayLocator(s);
+        const active = s.status === "active";
         return <tr key={s.id}>
           <td><div className="source-name-cell"><BrandLogo name={s.type} /><div><strong>{s.name}</strong><small title={displayLocator}>{displayLocator}</small></div></div></td>
           <td>{s.type === "Newsletter" ? "Journal / Library" : s.type}</td>
+          <td><button type="button" className={`source-toggle ${active ? "active" : "paused"}`} onClick={() => mutate(`/api/sources/${s.id}`, { status: active ? "paused" : "active" }, "PATCH")} aria-pressed={active}><span></span>{active ? "Active" : "Paused"}</button></td>
           <td><Badge tone={["configured", "not required"].includes(credential) ? "ok" : credential === "optional" ? "muted" : "warn"}>{credential}</Badge></td>
           <td><div className="source-actions"><button type="button" onClick={() => openEditSource(s)}><Icon name="pencil" />Edit</button><button className="danger" type="button" onClick={() => mutate(`/api/sources/${s.id}`, {}, "DELETE")}><Icon name="trash" />Delete</button></div></td>
         </tr>;
@@ -1052,6 +1159,36 @@ function Sources({ state, mutate }) {
           <Select label="Watch mode" value={mode} onChange={(nextMode) => setForm({ ...form, config: { mode: nextMode } })} options={Object.entries(definition.modes).map(([key, value]) => ({ value: key, label: value.label }))} />
           {form.type === "X" && <div className="notice"><strong>Locked quick mode</strong><span>Each run reads at most 10 posts, excludes retweets and replies, and reuses a 1-hour cache. Spend controls are intentionally not configurable.</span></div>}
           {modeDefinition.fields.map(([key, label, placeholder]) => <Field key={key} label={label} value={form.config[key] || ""} onChange={(value) => updateConfig(key, value)} placeholder={placeholder} required={key !== "keywords" && key !== "region" && key !== "include" && key !== "sort" && key !== "order" && key !== "scope"} />)}
+          {form.type === "Crypto" && <div className="crypto-picker">
+            <div className="notice"><strong>CoinGecko source</strong><span>Search for assets by name or symbol. Each brief run adds a structured market snapshot with price, 24h change, market cap, and volume.</span></div>
+            <div className="selected-coin-list">
+              {(form.config.coins || []).length ? (form.config.coins || []).map((coin) => <span className="coin-chip" key={coin.id}>
+                {coin.image && <img src={coin.image} alt="" />}
+                <b>{coin.symbol || coin.id}</b>
+                <small>{coin.name}</small>
+                <button type="button" onClick={() => removeCoin(coin.id)} aria-label={`Remove ${coin.name || coin.id}`}><Icon name="x" /></button>
+              </span>) : <p className="hint">No coins selected yet. Search below and add the assets you want in the brief.</p>}
+            </div>
+            <div className="crypto-search-row">
+              <Field label="Search CoinGecko" value={coinQuery} onChange={setCoinQuery} placeholder="bitcoin, eth, solana..." />
+              <Button type="button" icon="search" onClick={searchCoins} disabled={coinSearching}>{coinSearching ? "Searching..." : "Search"}</Button>
+            </div>
+            {coinResults.length > 0 && <div className="coin-result-list">
+              {coinResults.map((coin) => {
+                const added = (form.config.coins || []).some((item) => item.id === coin.id);
+                return <button type="button" key={coin.id} onClick={() => addCoin(coin)} disabled={added}>
+                  {coin.thumb && <img src={coin.thumb} alt="" />}
+                  <span><strong>{coin.name}</strong><small>{coin.symbol} {coin.marketCapRank ? `· Rank #${coin.marketCapRank}` : ""}</small></span>
+                  <Badge tone={added ? "ok" : "muted"}>{added ? "Added" : "Add"}</Badge>
+                </button>;
+              })}
+            </div>}
+            {coinMessage && <p className={coinMessage.includes("No ") || coinMessage.includes("Could") || coinMessage.includes("Type") ? "warn-text" : "ok-text"}>{coinMessage}</p>}
+            <Select label="Quote currency" value={form.config.vsCurrency || "usd"} onChange={(vsCurrency) => updateConfig("vsCurrency", vsCurrency)} options={["usd", "eur", "gbp", "btc", "eth"]} />
+            <label className="check"><input type="checkbox" checked={form.config.include24hChange !== false} onChange={(event) => updateConfig("include24hChange", event.target.checked)} /> Include 24h change</label>
+            <label className="check"><input type="checkbox" checked={form.config.includeMarketCap !== false} onChange={(event) => updateConfig("includeMarketCap", event.target.checked)} /> Include market cap</label>
+            <label className="check"><input type="checkbox" checked={form.config.include24hVolume !== false} onChange={(event) => updateConfig("include24hVolume", event.target.checked)} /> Include 24h volume</label>
+          </div>}
           {form.type === "Calendar" && <div className={`notice ${state.connectors?.googleCalendar?.status === "ready" ? "" : "notice-warn"}`}>
             <strong>{state.connectors?.googleCalendar?.status === "ready" ? "Google Calendar connected" : "Google Calendar required"}</strong>
             <span>Use <span className="mono">primary</span> for the signed-in user's primary calendar. Connect Google Calendar in Settings before this source can fetch events.</span>
@@ -1071,7 +1208,105 @@ function Sources({ state, mutate }) {
         <div className="modal-actions"><Button type="button" onClick={resetSourceForm}>Cancel</Button><Button icon={editingSource ? "save" : "plus"} kind="primary">{editingSource ? "Save source" : "Add source"}</Button></div>
       </form>
     </div>}
+    {libraryOpen && <SourceLibraryModal
+      state={state}
+      sources={librarySources}
+      selected={librarySelected}
+      setSelected={setLibrarySelected}
+      query={libraryQuery}
+      setQuery={setLibraryQuery}
+      type={libraryType}
+      setType={setLibraryType}
+      loading={libraryLoading}
+      message={libraryMessage}
+      setMessage={setLibraryMessage}
+      onClose={() => setLibraryOpen(false)}
+      onAdded={refresh}
+    />}
   </Page>;
+}
+
+function SourceLibraryModal({ state, sources, selected, setSelected, query, setQuery, type, setType, loading, message, setMessage, onClose, onAdded }) {
+  const [adding, setAdding] = React.useState(false);
+  const existingKeys = React.useMemo(() => new Set((state.sources || []).flatMap((source) => [
+    `${source.type}:${String(source.locator || "").toLowerCase()}`,
+    `${source.type}:${String(source.name || "").toLowerCase()}`,
+  ])), [state.sources]);
+  const types = ["All", ...Array.from(new Set((sources || []).map((source) => source.type))).sort()];
+  const decorated = (sources || []).map((source) => {
+    const added = existingKeys.has(`${source.type}:${String(source.locator || "").toLowerCase()}`) || existingKeys.has(`${source.type}:${String(source.name || "").toLowerCase()}`);
+    return { ...source, added };
+  });
+  const filtered = decorated.filter((source) => {
+    if (type !== "All" && source.type !== type) return false;
+    const text = `${source.name} ${source.type} ${source.locator} ${source.rationale} ${source.catalog}`.toLowerCase();
+    return text.includes(query.toLowerCase());
+  });
+  const selectable = filtered.filter((source) => !source.added);
+  const selectedSources = decorated.filter((source) => selected.has(source.id) && !source.added);
+  const selectVisible = () => setSelected((current) => new Set([...current, ...selectable.map((source) => source.id)]));
+  const clearVisible = () => setSelected((current) => {
+    const next = new Set(current);
+    filtered.forEach((source) => next.delete(source.id));
+    return next;
+  });
+  const addSelected = async () => {
+    if (!selectedSources.length) {
+      setMessage("Select at least one unadded source.");
+      return;
+    }
+    const blocked = selectedSources.filter((source) => sourcePrerequisites(source, state).some((note) => note.blocking));
+    if (blocked.length) {
+      setMessage(`${blocked.length} selected source${blocked.length === 1 ? "" : "s"} need setup first. Configure the required API or local transcription, or clear those items before adding.`);
+      return;
+    }
+    setAdding(true);
+    setMessage("");
+    try {
+      for (const source of selectedSources) {
+        await api("/api/sources", { method: "POST", body: JSON.stringify({ ...source, note: source.rationale }) });
+      }
+      setMessage(`Added ${selectedSources.length} source${selectedSources.length === 1 ? "" : "s"}.`);
+      setSelected(new Set());
+      await onAdded?.();
+    } catch (error) {
+      setMessage(error.message || "Could not add selected sources.");
+    } finally {
+      setAdding(false);
+    }
+  };
+  return <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
+    <div className="modal-card source-library-modal">
+      <div className="modal-head"><div><h2>Recommended source library</h2><p>Review the starter source catalog. Pick the ones you want; some need API keys or local transcription before they can run.</p></div><button type="button" onClick={onClose}><Icon name="x" /></button></div>
+      <div className="library-toolbar">
+        <label className="table-search"><Icon name="search" /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search library..." /></label>
+        <Select label="Type" value={type} onChange={setType} options={types} />
+      </div>
+      <div className="library-actions">
+        <Button type="button" icon="check" onClick={selectVisible} disabled={!selectable.length}>Select all visible</Button>
+        <Button type="button" onClick={clearVisible} disabled={!filtered.length}>Clear visible</Button>
+        <Badge>{selectedSources.length} selected</Badge>
+      </div>
+      {loading && <div className="boot small-boot">Loading recommended sources...</div>}
+      {!loading && <div className="source-suggestion-list library-list">{filtered.map((source) => {
+        const prereqs = sourcePrerequisites(source, state);
+        const blocked = prereqs.some((note) => note.blocking);
+        return <label className={`source-suggestion ${selected.has(source.id) ? "selected" : ""} ${blocked ? "blocked" : ""} ${source.added ? "disabled" : ""}`} key={source.id}>
+          <input type="checkbox" disabled={source.added} checked={!source.added && selected.has(source.id)} onChange={(event) => setSelected((current) => {
+            const next = new Set(current);
+            event.target.checked ? next.add(source.id) : next.delete(source.id);
+            return next;
+          })} />
+          <BrandLogo name={source.type} />
+          <div><strong>{source.name}</strong><small>{source.type} · {source.catalog || "Recommended"} · {source.locator}</small><p>{source.rationale}</p>{prereqs.length > 0 && <div className="source-prereqs">{prereqs.map((note) => <span key={note.label}><b>{note.label}</b>{note.body}</span>)}</div>}</div>
+          <Badge tone={source.added ? "ok" : blocked ? "warn" : "muted"}>{source.added ? "Added" : blocked ? "Needs setup" : "Ready"}</Badge>
+        </label>;
+      })}</div>}
+      {!loading && !filtered.length && <Empty icon="search" title="No matching library sources" body="Clear the search or choose another source type." />}
+      {message && <p className={message.includes("Added") ? "ok-text" : "warn-text"}>{message}</p>}
+      <div className="modal-actions"><Button type="button" onClick={onClose}>Close</Button><Button icon="plus" kind="primary" onClick={addSelected} disabled={adding || !selectedSources.length}>{adding ? "Adding..." : "Add selected"}</Button></div>
+    </div>
+  </div>;
 }
 
 function Lenses({ state, mutate }) {
@@ -1958,7 +2193,7 @@ function Onboarding({ state, mutate, refresh }) {
   const [draftingBriefSetup, setDraftingBriefSetup] = React.useState(false);
   const [briefDraftMessage, setBriefDraftMessage] = React.useState("");
   const [suggestions, setSuggestions] = React.useState(state.onboarding.sourceSuggestions || []);
-  const [selected, setSelected] = React.useState(() => new Set((state.onboarding.sourceSuggestions || []).map((s) => s.id)));
+  const [selected, setSelected] = React.useState(() => new Set((state.onboarding.sourceSuggestions || []).filter((s) => s.selectedByDefault !== false).map((s) => s.id)));
   const [pendingSourceIds, setPendingSourceIds] = React.useState(new Set());
   const [sourceMessage, setSourceMessage] = React.useState("");
   const [suggestingSources, setSuggestingSources] = React.useState(false);
@@ -1967,6 +2202,8 @@ function Onboarding({ state, mutate, refresh }) {
   const [savingSources, setSavingSources] = React.useState(false);
   const [xConnector, setXConnector] = React.useState({ enabled: true, apiKey: "" });
   const [xMessage, setXMessage] = React.useState("");
+  const [redditConnector, setRedditConnector] = React.useState({ enabled: true, clientId: "", clientSecret: "", grantType: "installed_client", deviceId: "DO_NOT_TRACK_THIS_DEVICE" });
+  const [redditMessage, setRedditMessage] = React.useState("");
   const [ffmpegStatus, setFfmpegStatus] = React.useState(state.runtime?.ffmpeg || null);
   const [ffmpegBusy, setFfmpegBusy] = React.useState(false);
   const [ffmpegMessage, setFfmpegMessage] = React.useState("");
@@ -2156,10 +2393,11 @@ function Onboarding({ state, mutate, refresh }) {
       const suggestionState = result.state || state;
       const blockedCount = nextSuggestions.filter((source) => !sourceReadyForOnboarding(source, suggestionState)).length;
       setSuggestions(nextSuggestions);
-      setSelected(new Set(nextSuggestions.map((s) => s.id)));
+      setSelected(new Set(nextSuggestions.filter((s) => s.selectedByDefault !== false).map((s) => s.id)));
       setSourceLoadingText("Sources found.");
       await new Promise((resolve) => {
         let count = 0;
+        const intervalMs = Math.max(8, Math.min(180, Math.floor(1600 / Math.max(1, nextSuggestions.length))));
         const countTimer = setInterval(() => {
           count += 1;
           setSourceFoundCount(Math.min(count, nextSuggestions.length));
@@ -2167,7 +2405,7 @@ function Onboarding({ state, mutate, refresh }) {
             clearInterval(countTimer);
             resolve();
           }
-        }, 180);
+        }, intervalMs);
       });
       setSourceMessage(`Found ${nextSuggestions.length} source${nextSuggestions.length === 1 ? "" : "s"}. ${blockedCount ? `${blockedCount} will walk you through setup before they are added.` : "Review the suggestions, then add the ones you want."}`);
       await refresh();
@@ -2176,6 +2414,28 @@ function Onboarding({ state, mutate, refresh }) {
     } finally {
       clearInterval(phraseTimer);
       setSuggestingSources(false);
+    }
+  };
+  const loadStarterCatalog = async () => {
+    setSourceMessage("");
+    try {
+      const result = await api("/api/source-library");
+      const catalog = result.sources || [];
+      setSuggestions((current) => {
+        const seen = new Set(current.map((source) => `${source.type}:${String(source.locator || source.name || "").toLowerCase()}`));
+        const additions = catalog.filter((source) => {
+          const key = `${source.type}:${String(source.locator || source.name || "").toLowerCase()}`;
+          if (seen.has(key)) return false;
+          seen.add(key);
+          return true;
+        });
+        const merged = [...current, ...additions];
+        setSourceFoundCount(merged.length);
+        setSourceMessage(`Loaded ${additions.length} starter catalog source${additions.length === 1 ? "" : "s"} for review.`);
+        return merged;
+      });
+    } catch (error) {
+      setSourceMessage(error.message || "Could not load the starter catalog.");
     }
   };
   const speechSupported = typeof navigator !== "undefined" && !!navigator.mediaDevices?.getUserMedia && !!(window.AudioContext || window.webkitAudioContext);
@@ -2319,6 +2579,17 @@ function Onboarding({ state, mutate, refresh }) {
       setXMessage(error.message || "Could not save X API token.");
     }
   };
+  const saveRedditAccess = async (event) => {
+    event?.preventDefault();
+    setRedditMessage("");
+    try {
+      await mutate("/api/connectors/reddit", { ...redditConnector, enabled: true }, "PATCH");
+      setRedditConnector({ ...redditConnector, clientId: "", clientSecret: "" });
+      setRedditMessage("Reddit OAuth settings saved.");
+    } catch (error) {
+      setRedditMessage(error.message || "Could not save Reddit OAuth settings.");
+    }
+  };
   const checkFfmpeg = async () => {
     setFfmpegBusy(true);
     setFfmpegMessage("");
@@ -2385,7 +2656,7 @@ function Onboarding({ state, mutate, refresh }) {
     const nextIds = new Set(remaining.map((source) => source.id));
     setPendingSourceIds(nextIds);
     setSelected(nextIds);
-    setSourceMessage(`Skipped ${key === "x" ? "X" : "transcription-dependent"} sources.`);
+    setSourceMessage(`Skipped ${key === "x" ? "X" : key === "reddit" ? "Reddit OAuth" : "transcription-dependent"} sources.`);
     if (!remaining.length) {
       await go("sources");
     }
@@ -2399,6 +2670,14 @@ function Onboarding({ state, mutate, refresh }) {
     }
     await saveChosenSources(ready);
   };
+  const personalizedSuggestions = suggestions.filter((source) => source.catalog === "Personalized" || source.selectedByDefault !== false);
+  const recommendedLibrarySuggestions = suggestions.filter((source) => source.catalog && source.catalog !== "Personalized" && source.selectedByDefault === false);
+  const selectSuggestionGroup = (items) => setSelected((current) => new Set([...current, ...items.map((source) => source.id)]));
+  const clearSuggestionGroup = (items) => setSelected((current) => {
+    const next = new Set(current);
+    items.forEach((source) => next.delete(source.id));
+    return next;
+  });
   const waitForCalendarConnection = async () => {
     for (let attempt = 0; attempt < 24; attempt += 1) {
       await new Promise((resolve) => setTimeout(resolve, 2500));
@@ -2556,9 +2835,21 @@ function Onboarding({ state, mutate, refresh }) {
         <p>{suggestingSources ? "The app is finding source candidates from your brief request." : "Pick the ones that look right. They become real sources as soon as you add them."}</p>
         {suggestingSources && <OnboardingLoading title={sourceLoadingText} body={`Found ${sourceFoundCount} source${sourceFoundCount === 1 ? "" : "s"} so far.`} />}
         {!suggestingSources && sourceFoundCount > 0 && <div className="onboarding-found-count"><Icon name="check" /><strong>Found {sourceFoundCount} source{sourceFoundCount === 1 ? "" : "s"}</strong></div>}
+        {!suggestingSources && suggestions.length > 0 && <div className="notice source-library-notice">
+          <strong>Recommended source library</strong>
+          <span>Personalized suggestions are selected by default. You can also load the starter catalog, review what looks useful, and add only the sources you want. API-key and transcription requirements are called out before anything runs.</span>
+        </div>}
+        {!suggestingSources && suggestions.length > 0 && <div className="library-actions onboarding-library-actions">
+          <Button type="button" icon="check" onClick={() => selectSuggestionGroup(suggestions)}>Select all</Button>
+          <Button type="button" onClick={() => clearSuggestionGroup(suggestions)}>Clear all</Button>
+          {personalizedSuggestions.length > 0 && <Button type="button" onClick={() => selectSuggestionGroup(personalizedSuggestions)}>Select personalized</Button>}
+          {recommendedLibrarySuggestions.length > 0 ? <Button type="button" onClick={() => selectSuggestionGroup(recommendedLibrarySuggestions)}>Select starter catalog</Button> : <Button type="button" icon="templates" onClick={loadStarterCatalog}>Load starter catalog</Button>}
+          <Badge>{selected.size} selected</Badge>
+        </div>}
         <div className="source-suggestion-list">{suggestions.map((source) => {
           const prereqs = sourcePrerequisites(source, state);
           const blocked = prereqs.some((note) => note.blocking);
+          const starterCatalog = source.catalog && source.catalog !== "Personalized" && source.selectedByDefault === false;
           return <label className={`source-suggestion ${selected.has(source.id) ? "selected" : ""} ${blocked ? "blocked" : ""}`} key={source.id}>
             <input type="checkbox" checked={selected.has(source.id)} onChange={(event) => setSelected((current) => {
               const next = new Set(current);
@@ -2566,8 +2857,8 @@ function Onboarding({ state, mutate, refresh }) {
               return next;
             })} />
             <BrandLogo name={source.type} />
-            <div><strong>{source.name}</strong><small>{source.type} · {source.locator}</small><p>{source.rationale}</p>{prereqs.length > 0 && <div className="source-prereqs">{prereqs.map((note) => <span key={note.label}><b>{note.label}</b>{note.body}</span>)}</div>}</div>
-            <Badge tone={blocked ? "warn" : "muted"}>{blocked ? "Will guide setup" : `${Math.round((source.confidence || 0.7) * 100)}%`}</Badge>
+            <div><strong>{source.name}</strong><small>{source.type} · {source.catalog || "Personalized"} · {source.locator}</small><p>{source.rationale}</p>{prereqs.length > 0 && <div className="source-prereqs">{prereqs.map((note) => <span key={note.label}><b>{note.label}</b>{note.body}</span>)}</div>}</div>
+            <Badge tone={blocked ? "warn" : starterCatalog ? "ok" : "muted"}>{blocked ? "Needs setup" : starterCatalog ? "Starter catalog" : `${Math.round((source.confidence || 0.7) * 100)}%`}</Badge>
           </label>;
         })}</div>
         {!suggestingSources && !suggestions.length && <Empty icon="sources" title="No suggestions yet" body="Generate source suggestions from your brief request." action={<Button icon="run" kind="primary" onClick={suggestSources}>Generate suggestions</Button>} />}
@@ -2596,6 +2887,15 @@ function Onboarding({ state, mutate, refresh }) {
           <Field label="Bearer token" type="password" value={xConnector.apiKey} onChange={(apiKey) => setXConnector({ ...xConnector, apiKey })} placeholder={state.connectors?.x?.apiKeySaved ? "Saved. Paste a new token to replace it." : "Paste X bearer token"} />
           {xMessage && <p className={xMessage.includes("saved") ? "ok-text" : "warn-text"}>{xMessage}</p>}
           <div className="row"><Button type="button" onClick={() => skipPrerequisiteSources("x")}>Skip X sources</Button><Button icon="save" kind="primary">Save X API</Button></div>
+        </form>}
+        {pendingPrereqKeys.includes("reddit") && <form className="setup-card form" onSubmit={saveRedditAccess}>
+          <div className="setup-card-head"><BrandLogo name="Reddit" /><div><h3>Reddit OAuth</h3><p>Reddit catalog sources use the official API when you add a Reddit app client ID. Public fallback is available from manual sources, but onboarding catalog picks ask for OAuth first.</p></div><Badge tone={state.connectors?.reddit?.status === "ready" ? "ok" : "warn"}>{state.connectors?.reddit?.status === "ready" ? "Ready" : "Needs OAuth"}</Badge></div>
+          <Select label="Grant type" value={redditConnector.grantType} onChange={(grantType) => setRedditConnector({ ...redditConnector, grantType })} options={["installed_client", "client_credentials"]} />
+          <Field label="Client ID" value={redditConnector.clientId} onChange={(clientId) => setRedditConnector({ ...redditConnector, clientId })} placeholder={state.connectors?.reddit?.apiKeySaved ? "Saved. Paste a new client ID to replace it." : "Paste Reddit app client ID"} />
+          <Field label="Client secret" type="password" value={redditConnector.clientSecret} onChange={(clientSecret) => setRedditConnector({ ...redditConnector, clientSecret })} placeholder="Optional for installed app, required for script/web app" />
+          {redditConnector.grantType === "installed_client" && <Field label="Device ID" value={redditConnector.deviceId} onChange={(deviceId) => setRedditConnector({ ...redditConnector, deviceId })} placeholder="DO_NOT_TRACK_THIS_DEVICE" />}
+          {redditMessage && <p className={redditMessage.includes("saved") ? "ok-text" : "warn-text"}>{redditMessage}</p>}
+          <div className="row"><Button type="button" onClick={() => skipPrerequisiteSources("reddit")}>Skip Reddit sources</Button><Button icon="save" kind="primary">Save Reddit OAuth</Button></div>
         </form>}
         {(pendingPrereqKeys.includes("ffmpeg") || pendingPrereqKeys.includes("transcriptionModel")) && <div className="setup-card">
           <div className="setup-card-head"><BrandLogo name="Podcast" /><div><h3>Podcast transcription</h3><p>Podcast sources need FFmpeg for long audio processing and either local Whisper STT or an OpenAI-compatible transcription model.</p></div><Badge tone={!pendingPrereqKeys.includes("ffmpeg") && !pendingPrereqKeys.includes("transcriptionModel") ? "ok" : "warn"}>Setup required</Badge></div>
@@ -2732,8 +3032,14 @@ function Audit({ state }) {
 function Settings({ state, mutate, refresh, desktopUpdate }) {
   const [connectorModal, setConnectorModal] = React.useState(false);
   const [editingProvider, setEditingProvider] = React.useState("");
+  const [eraseModal, setEraseModal] = React.useState(false);
+  const [eraseConfirmation, setEraseConfirmation] = React.useState("");
+  const [dataMessage, setDataMessage] = React.useState("");
+  const [dataBusy, setDataBusy] = React.useState(false);
   const [telegramModal, setTelegramModal] = React.useState(false);
   const [xModal, setXModal] = React.useState(false);
+  const [redditModal, setRedditModal] = React.useState(false);
+  const [redditMessage, setRedditMessage] = React.useState("");
   const [googleCalendarModal, setGoogleCalendarModal] = React.useState(false);
   const [googleCalendarSelection, setGoogleCalendarSelection] = React.useState(state.connectors?.googleCalendar?.selectedCalendarIds || ["primary"]);
   const [googleCalendarSelectionDirty, setGoogleCalendarSelectionDirty] = React.useState(false);
@@ -2751,6 +3057,13 @@ function Settings({ state, mutate, refresh, desktopUpdate }) {
   const [xConnector, setXConnector] = React.useState({
     enabled: true,
     apiKey: "",
+  });
+  const [redditConnector, setRedditConnector] = React.useState({
+    enabled: true,
+    clientId: "",
+    clientSecret: "",
+    grantType: "client_credentials",
+    deviceId: "DO_NOT_TRACK_THIS_DEVICE",
   });
   const [telegramForm, setTelegramForm] = React.useState({ enabled: state.telegram.enabled, botToken: state.telegram.botToken, chatId: state.telegram.chatId, allowedUsers: state.telegram.allowedUsers.join(", ") });
   const [detecting, setDetecting] = React.useState(false);
@@ -2780,6 +3093,15 @@ function Settings({ state, mutate, refresh, desktopUpdate }) {
     });
   }, [state.connectors]);
   React.useEffect(() => {
+    setRedditConnector((current) => ({
+      enabled: true,
+      clientId: "",
+      clientSecret: "",
+      grantType: state.connectors?.reddit?.grantType || current.grantType || "client_credentials",
+      deviceId: current.deviceId || "DO_NOT_TRACK_THIS_DEVICE",
+    }));
+  }, [state.connectors?.reddit?.grantType]);
+  React.useEffect(() => {
     setTelegramForm({ enabled: state.telegram.enabled, botToken: state.telegram.botToken, chatId: state.telegram.chatId, allowedUsers: state.telegram.allowedUsers.join(", ") });
   }, [state.telegram]);
   React.useEffect(() => {
@@ -2799,6 +3121,65 @@ function Settings({ state, mutate, refresh, desktopUpdate }) {
   const saveXConnector = (e) => {
     e.preventDefault();
     mutate("/api/connectors/x", { ...xConnector, enabled: true }, "PATCH").then(() => setXModal(false));
+  };
+  const downloadBackup = async () => {
+    setDataMessage("Preparing backup...");
+    if (desktopRuntime.isDesktop()) {
+      try {
+        const result = await api("/api/data/backup/save", { method: "POST", body: JSON.stringify({}) });
+        setDataMessage(`Backup saved to Downloads as ${result.backup?.fileName || "a SQLite file"}.${result.backup?.revealed ? " Finder opened it for you." : ""} Store it somewhere safe; it contains credentials and private brief data.`);
+      } catch (error) {
+        setDataMessage(error.message || "Could not save backup.");
+      }
+      return;
+    }
+    const link = document.createElement("a");
+    link.href = "/api/data/backup";
+    link.download = "";
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setDataMessage("Backup download started. Store it somewhere safe; it contains credentials and private brief data.");
+  };
+  const eraseAllData = async (event) => {
+    event.preventDefault();
+    setDataBusy(true);
+    setDataMessage("");
+    try {
+      const result = await api("/api/data/erase", { method: "POST", body: JSON.stringify({ confirmation: eraseConfirmation }) });
+      setEraseModal(false);
+      setEraseConfirmation("");
+      setDataMessage(`Data erased. Removed ${result.result?.removedAudioFiles || 0} generated audio file${result.result?.removedAudioFiles === 1 ? "" : "s"}.`);
+      await refresh();
+    } catch (error) {
+      setDataMessage(error.message || "Could not erase data.");
+    } finally {
+      setDataBusy(false);
+    }
+  };
+  const saveRedditConnector = async (e) => {
+    e.preventDefault();
+    setRedditMessage("");
+    try {
+      await mutate("/api/connectors/reddit", { ...redditConnector, enabled: true }, "PATCH");
+      setRedditConnector({ ...redditConnector, clientId: "", clientSecret: "" });
+      setRedditMessage("Reddit OAuth settings saved.");
+      setRedditModal(false);
+    } catch (error) {
+      setRedditMessage(error.message || "Could not save Reddit connector.");
+    }
+  };
+  const testRedditConnector = async () => {
+    setRedditMessage("");
+    try {
+      await api("/api/reddit/test", { method: "POST", body: JSON.stringify(redditConnector) });
+      setRedditConnector({ ...redditConnector, clientId: "", clientSecret: "" });
+      setRedditMessage("Reddit OAuth API is ready.");
+      await refresh();
+    } catch (error) {
+      setRedditMessage(error.message || "Reddit OAuth test failed.");
+      await refresh();
+    }
   };
   const startGoogleCalendarOAuth = async (e) => {
     e.preventDefault();
@@ -2932,13 +3313,14 @@ function Settings({ state, mutate, refresh, desktopUpdate }) {
   }, [editingProvider, model.apiKey, detectModels, state.model.credentialStatus, state.model.provider, state.model.providerCredentials]);
   const modelConnected = state.model.status === "ready";
   const xConnected = state.connectors?.x?.status === "ready";
+  const redditConnected = state.connectors?.reddit?.status === "ready";
   const googleCalendarConnected = state.connectors?.googleCalendar?.status === "ready";
   const telegramConnected = state.telegram?.enabled && state.telegram?.chatId && state.telegram?.botToken;
   const providerRows = modelProviderRows;
   const researchRows = [
     { service: "X (Twitter)", sub: "Search and monitor posts", type: "Social", logo: "X", status: xConnected ? "Connected" : "Needs token", connected: xConnected, action: "x" },
     { service: "Google Calendar", sub: "Add today's agenda to briefs", type: "Calendar", logo: "Calendar", status: googleCalendarConnected ? "Connected" : state.connectors?.googleCalendar?.status === "needs consent" ? "Needs consent" : "Needs OAuth", connected: googleCalendarConnected, action: "googleCalendar" },
-    { service: "Reddit", sub: "Monitor subreddits and posts", type: "Social", logo: "Reddit", status: "Available", connected: true },
+    { service: "Reddit", sub: "Monitor subreddits and posts", type: "Social", logo: "Reddit", status: redditConnected ? "Connected" : "Optional OAuth", connected: redditConnected, action: "reddit" },
     { service: "Web Search", sub: "General web search", type: "Search", logo: "Web", status: "Available", connected: true },
     { service: "YouTube", sub: "Channels, uploads, and transcripts", type: "Video", logo: "YouTube", status: "Available", connected: true },
   ];
@@ -3044,6 +3426,27 @@ function Settings({ state, mutate, refresh, desktopUpdate }) {
       </section>}
       <section className="panel connector-card">
         <div className="connector-head">
+          <div className="connector-title"><span className="connector-icon"><Icon name="Database" /></span><div><h2>Data Management</h2><p>Back up or erase local Pillar Brief data.</p></div></div>
+          <Badge>{state.runtime?.mode === "desktop" ? "Local" : "Server"}</Badge>
+        </div>
+        <div className="connector-row dependency-row">
+          <div className="connector-name"><span className="source-icon-box"><Icon name="download" /></span><div><strong>Save backup</strong><small>Exports the app SQLite database, including settings, credentials, sources, briefs, and workflow artifacts.</small></div></div>
+          <span>SQLite</span>
+          <Badge tone="warn">Private</Badge>
+          <span>Store securely; this backup may contain API keys and tokens.</span>
+          <Button type="button" icon="download" kind="primary" onClick={downloadBackup}>Save backup</Button>
+        </div>
+        <div className="connector-row dependency-row danger-row">
+          <div className="connector-name"><span className="source-icon-box"><Icon name="trash" /></span><div><strong>Erase all data</strong><small>Resets sources, settings, credentials, briefs, onboarding, audit history, and generated audio.</small></div></div>
+          <span>Destructive</span>
+          <Badge tone="warn">No undo</Badge>
+          <span>Download a backup first if you may need this data later.</span>
+          <Button type="button" icon="trash" className="danger-button" onClick={() => { setEraseModal(true); setEraseConfirmation(""); }}>Erase</Button>
+        </div>
+        {dataMessage && <div className={`notice ${dataMessage.includes("erased") || dataMessage.includes("started") ? "" : "notice-warn"}`}><strong>Data status</strong><span>{dataMessage}</span></div>}
+      </section>
+      <section className="panel connector-card">
+        <div className="connector-head">
           <div className="connector-title"><span className="connector-icon purple"><Icon name="run" /></span><div><h2>Models for Analysis</h2><p>AI models used to analyze information and generate your brief.</p></div></div>
           <Badge>{providerRows.length} providers</Badge>
         </div>
@@ -3085,7 +3488,7 @@ function Settings({ state, mutate, refresh, desktopUpdate }) {
             <span>{row.type}</span>
             <Badge tone={row.connected ? "ok" : "muted"}>{row.status}</Badge>
             <span>{row.connected ? "Ready" : "-"}</span>
-            <Button type="button" icon="pencil" onClick={() => row.action === "x" ? setXModal(true) : row.action === "googleCalendar" ? setGoogleCalendarModal(true) : null}>{row.action === "x" || row.action === "googleCalendar" ? "Edit" : "View"}</Button>
+            <Button type="button" icon="pencil" onClick={() => row.action === "x" ? setXModal(true) : row.action === "googleCalendar" ? setGoogleCalendarModal(true) : row.action === "reddit" ? setRedditModal(true) : null}>{row.action === "x" || row.action === "googleCalendar" || row.action === "reddit" ? "Edit" : "View"}</Button>
           </div>)}
         </div>
       </section>
@@ -3146,6 +3549,21 @@ function Settings({ state, mutate, refresh, desktopUpdate }) {
         {state.auditLogs.length ? <table><thead><tr><th>Time</th><th>Actor</th><th>Action</th><th>Entity</th><th>Note</th></tr></thead><tbody>{state.auditLogs.slice(0, 12).map((a) => <tr key={a.id}><td className="mono">{new Date(a.ts).toLocaleString()}</td><td>{a.actor}</td><td><Badge>{a.action}</Badge></td><td className="mono">{a.entityType}:{a.entityId}</td><td>{a.note}</td></tr>)}</tbody></table> : <Empty icon="audit" title="No audit entries" body="The first state-changing action will create the first audit log." />}
       </section>
     </div>
+    {eraseModal && <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setEraseModal(false); }}>
+      <form className="modal-card connector-modal form destructive-modal" onSubmit={eraseAllData}>
+        <div className="modal-head"><div><h2>Erase all data?</h2><p>This permanently removes local Pillar Brief data from this app instance.</p></div><button type="button" onClick={() => setEraseModal(false)}><Icon name="x" /></button></div>
+        <div className="notice notice-warn">
+          <strong>Back up first</strong>
+          <span>This deletes sources, settings, API keys, calendar tokens, Telegram pairing, briefs, workflow history, onboarding state, audit logs, and generated audio files. Download a backup before continuing.</span>
+        </div>
+        <div className="setup-link-row">
+          <Button type="button" icon="download" onClick={downloadBackup}>Save backup first</Button>
+        </div>
+        <Field label="Type ERASE ALL DATA to confirm" value={eraseConfirmation} onChange={setEraseConfirmation} placeholder="ERASE ALL DATA" />
+        {dataMessage && <p className={dataMessage.includes("erased") || dataMessage.includes("started") ? "ok-text" : "warn-text"}>{dataMessage}</p>}
+        <div className="modal-actions"><Button type="button" onClick={() => setEraseModal(false)}>Cancel</Button><Button icon="trash" className="danger-button" disabled={dataBusy || eraseConfirmation !== "ERASE ALL DATA"}>{dataBusy ? "Erasing..." : "Erase all data"}</Button></div>
+      </form>
+    </div>}
     {connectorModal && <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setConnectorModal(false); }}>
       <div className="modal-card connector-modal">
         <div className="modal-head"><div><h2>Add connector</h2><p>Choose the connector you want to configure.</p></div><button type="button" onClick={() => setConnectorModal(false)}><Icon name="x" /></button></div>
@@ -3159,7 +3577,7 @@ function Settings({ state, mutate, refresh, desktopUpdate }) {
           <button type="button" onClick={() => { setConnectorModal(false); setXModal(true); }}><BrandLogo name="X" /><strong>X search API</strong><span>Official bearer-token recent search.</span></button>
           <button type="button" onClick={() => { setConnectorModal(false); setGoogleCalendarModal(true); }}><BrandLogo name="Calendar" /><strong>Google Calendar</strong><span>Read today's agenda into each brief.</span></button>
           <button type="button" onClick={() => setConnectorModal(false)}><Icon name="volume" /><strong>ElevenLabs audio</strong><span>Use the Audio Briefs settings below.</span></button>
-          <button type="button" onClick={() => setConnectorModal(false)}><BrandLogo name="Reddit" /><strong>Public research connectors</strong><span>Reddit, RSS, web, YouTube, and podcast sources.</span></button>
+          <button type="button" onClick={() => { setConnectorModal(false); setRedditModal(true); }}><BrandLogo name="Reddit" /><strong>Reddit OAuth API</strong><span>Official app-only OAuth for subreddit sources.</span></button>
         </div>
         <p className="hint">Most research connectors are added as Sources. Provider credentials live on this Settings page.</p>
       </div>
@@ -3187,6 +3605,21 @@ function Settings({ state, mutate, refresh, desktopUpdate }) {
         <div className="modal-head"><div><h2>X search API</h2><p>Add or replace the official bearer token used for X search.</p></div><button type="button" onClick={() => setXModal(false)}><Icon name="x" /></button></div>
         <Field label="Bearer token" type="password" value={xConnector.apiKey} onChange={(apiKey) => setXConnector({ ...xConnector, apiKey })} placeholder={state.connectors?.x?.apiKeySaved ? "Saved. Paste a new token to replace it." : "Paste X bearer token"} />
         <div className="modal-actions"><Button type="button" onClick={() => setXModal(false)}>Cancel</Button><Button icon="save" kind="primary">Save X API</Button></div>
+      </form>
+    </div>}
+    {redditModal && <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setRedditModal(false); }}>
+      <form className="modal-card connector-modal form" onSubmit={saveRedditConnector}>
+        <div className="modal-head"><div><h2>Reddit OAuth API</h2><p>Use an official Reddit app token for subreddit sources instead of public RSS/JSON endpoints.</p></div><button type="button" onClick={() => setRedditModal(false)}><Icon name="x" /></button></div>
+        <div className={`notice ${redditConnected ? "" : "notice-warn"}`}>
+          <strong>{redditConnected ? "Reddit OAuth ready" : "Reddit OAuth not configured"}</strong>
+          <span>{state.connectors?.reddit?.lastError || redditMessage || "Create a Reddit app, then paste the client ID and optional client secret here."}</span>
+        </div>
+        <Select label="Grant type" value={redditConnector.grantType} onChange={(grantType) => setRedditConnector({ ...redditConnector, grantType })} options={["client_credentials", "installed_client"]} />
+        <Field label="Client ID" value={redditConnector.clientId} onChange={(clientId) => setRedditConnector({ ...redditConnector, clientId })} placeholder={state.connectors?.reddit?.apiKeySaved ? "Saved. Paste a new client ID to replace it." : "Paste Reddit app client ID"} />
+        <Field label="Client secret" type="password" value={redditConnector.clientSecret} onChange={(clientSecret) => setRedditConnector({ ...redditConnector, clientSecret })} placeholder={state.connectors?.reddit?.apiKeySaved ? "Saved if configured. Paste to replace it." : "Required for script/web app; blank for installed app"} />
+        {redditConnector.grantType === "installed_client" && <Field label="Device ID" value={redditConnector.deviceId} onChange={(deviceId) => setRedditConnector({ ...redditConnector, deviceId })} placeholder="DO_NOT_TRACK_THIS_DEVICE" />}
+        {redditMessage && <p className={redditMessage.includes("ready") || redditMessage.includes("saved") ? "ok-text" : "warn-text"}>{redditMessage}</p>}
+        <div className="modal-actions"><Button type="button" onClick={() => setRedditModal(false)}>Cancel</Button><Button type="button" icon="run" onClick={testRedditConnector}>Test</Button><Button icon="save" kind="primary">Save Reddit OAuth</Button></div>
       </form>
     </div>}
     {googleCalendarModal && <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) closeGoogleCalendarModal(); }}>
@@ -3233,8 +3666,12 @@ function Select({ label, value, onChange, options }) {
   })}</select></label>;
 }
 
+function routeFromHash() {
+  return location.hash.replace(/^#\/?/, "") || "overview";
+}
+
 function App() {
-  const [route, setRoute] = React.useState(location.hash.slice(1) || "overview");
+  const [route, setRoute] = React.useState(routeFromHash());
   const [runState, setRunState] = React.useState({ status: "idle", stepIndex: 0, error: "" });
   const { state, error, mutate, refresh } = useConsoleState();
   const desktopUpdate = useDesktopUpdates();
@@ -3252,7 +3689,7 @@ function App() {
   }, [route]);
   React.useEffect(() => { location.hash = route; }, [route]);
   React.useEffect(() => {
-    const onHash = () => requestRoute(location.hash.slice(1) || "overview");
+    const onHash = () => requestRoute(routeFromHash());
     window.addEventListener("hashchange", onHash);
     return () => window.removeEventListener("hashchange", onHash);
   }, [requestRoute]);
@@ -3301,7 +3738,7 @@ function App() {
     briefs: <Briefs state={state} runWorkflow={runWorkflow} refresh={refresh} />,
     generating: <GeneratingBrief runState={runState} />,
     briefSetup: <BriefSetup state={state} mutate={mutate} />,
-    sources: <Sources state={state} mutate={mutate} />,
+    sources: <Sources state={state} mutate={mutate} refresh={refresh} />,
     lenses: <Lenses state={state} mutate={mutate} />,
     telegram: <Telegram state={state} mutate={mutate} refresh={refresh} />,
     settings: <Settings state={state} mutate={mutate} refresh={refresh} desktopUpdate={desktopUpdate} />,

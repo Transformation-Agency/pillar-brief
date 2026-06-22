@@ -7,6 +7,7 @@ import { pipeline } from "node:stream/promises";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { DatabaseSync } from "node:sqlite";
+import os from "node:os";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, "..");
@@ -36,6 +37,8 @@ const audioDir = path.join(dataDir, "audio");
 fs.mkdirSync(audioDir, { recursive: true });
 const modelsDir = path.join(dataDir, "models");
 fs.mkdirSync(modelsDir, { recursive: true });
+const backupsDir = path.join(dataDir, "backups");
+fs.mkdirSync(backupsDir, { recursive: true });
 
 const db = new DatabaseSync(dbPath);
 db.exec("PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL;");
@@ -534,7 +537,7 @@ function installFfmpegWithBrew(brewPath) {
 }
 
 function sourceCredentialStatus(type) {
-  if (["Web", "RSS", "Podcast", "Newsletter", "Reddit", "YouTube"].includes(type)) return "not required";
+  if (["Web", "RSS", "Podcast", "Newsletter", "Reddit", "YouTube", "Crypto"].includes(type)) return "not required";
   if (type === "Calendar") return "missing";
   if (["X", "TikTok"].includes(type)) return "optional";
   return "missing";
@@ -668,6 +671,7 @@ function defaultSourceConfig(type) {
   if (type === "Podcast") return { mode: "feed" };
   if (type === "Newsletter") return { mode: "feed" };
   if (type === "Calendar") return { mode: "google", calendarId: "selected", includeAttendees: true, includeDescriptions: false, includeDeclined: false };
+  if (type === "Crypto") return { mode: "coingecko", provider: "coingecko", coins: [], vsCurrency: "usd", includeMarketCap: true, include24hVolume: true, include24hChange: true };
   if (type === "Web") return { mode: "page" };
   return { mode: "feed" };
 }
@@ -685,12 +689,12 @@ function stripGeneratedYears(value = "") {
 }
 
 function sanitizeSourceSuggestion(item, index = 0, options = {}) {
-  const allowedTypes = new Set(["Web", "RSS", "Reddit", "X", "YouTube", "Podcast", "Newsletter", "TikTok", "Calendar"]);
+  const allowedTypes = new Set(["Web", "RSS", "Reddit", "X", "YouTube", "Podcast", "Newsletter", "TikTok", "Calendar", "Crypto"]);
   const type = allowedTypes.has(item?.type) ? item.type : "RSS";
   const rawConfig = item?.config && typeof item.config === "object" ? item.config : defaultSourceConfig(type);
   const rawXQuery = rawConfig.query || item?.locator || rawConfig.handle || "";
-  const config = type === "X" ? { mode: "search", query: options.keepYears ? String(rawXQuery || "").trim() : stripGeneratedYears(rawXQuery) } : rawConfig;
-  const locator = String(item?.locator || config.feedUrl || config.url || config.query || config.subreddits || config.channel || config.handle || "").trim();
+  const config = type === "X" ? { mode: "search", query: options.keepYears ? String(rawXQuery || "").trim() : stripGeneratedYears(rawXQuery) } : type === "Crypto" ? sanitizeSourceConfig("Crypto", rawConfig, item?.locator || "") : rawConfig;
+  const locator = String(item?.locator || (type === "Crypto" ? `coingecko:${(config.coins || []).map((coin) => coin.id).filter(Boolean).join(",")}` : "") || config.feedUrl || config.url || config.query || config.subreddits || config.channel || config.handle || "").trim();
   return {
     id: String(item?.id || `suggestion-${index + 1}`),
     name: String(item?.name || `${type} source`).trim().slice(0, 120),
@@ -700,7 +704,89 @@ function sanitizeSourceSuggestion(item, index = 0, options = {}) {
     config: { ...defaultSourceConfig(type), ...config },
     rationale: String(item?.rationale || "Suggested from your brief goals.").trim().slice(0, 500),
     confidence: Math.max(0, Math.min(1, Number(item?.confidence ?? 0.72))),
+    selectedByDefault: item?.selectedByDefault !== false,
+    catalog: item?.catalog || "",
   };
+}
+
+function catalogSourceSuggestions() {
+  const suggestions = [];
+  DEFAULT_RSS_SOURCES.forEach(([name, feedUrl, note], index) => suggestions.push({
+    id: `catalog-rss-${index + 1}`,
+    name,
+    type: "RSS",
+    locator: feedUrl,
+    cadence: "Daily",
+    config: { mode: "feed", feedUrl },
+    rationale: note,
+    confidence: 0.66,
+    selectedByDefault: false,
+    catalog: "RSS catalog",
+  }));
+  DEFAULT_REDDIT_SOURCES.forEach(([name, subreddit, note], index) => suggestions.push({
+    id: `catalog-reddit-${index + 1}`,
+    name,
+    type: "Reddit",
+    locator: `r/${subreddit}`,
+    cadence: "Daily",
+    config: { mode: "subreddit", subreddits: subreddit, requiresOAuth: true },
+    rationale: `${note} Requires Reddit OAuth before onboarding adds it.`,
+    confidence: 0.62,
+    selectedByDefault: false,
+    catalog: "Reddit catalog",
+  }));
+  DEFAULT_X_SOURCES.forEach(([name, query, note], index) => suggestions.push({
+    id: `catalog-x-${index + 1}`,
+    name,
+    type: "X",
+    locator: `search:${query}`,
+    cadence: "Daily",
+    config: { mode: "search", query, quickMode: true, quickModeLocked: true },
+    rationale: `${note} Requires X API access before onboarding adds it.`,
+    confidence: 0.6,
+    selectedByDefault: false,
+    catalog: "X catalog",
+  }));
+  DEFAULT_PODCAST_SOURCES.forEach(([name, feedUrl, note], index) => suggestions.push({
+    id: `catalog-podcast-${index + 1}`,
+    name,
+    type: "Podcast",
+    locator: feedUrl,
+    cadence: "Daily",
+    config: { mode: "feed", feedUrl, transcribeNewEpisodes: true, maxItems: 5 },
+    rationale: `${note} Requires local transcription setup before onboarding adds it.`,
+    confidence: 0.6,
+    selectedByDefault: false,
+    catalog: "Podcast catalog",
+  }));
+  DEFAULT_YOUTUBE_SOURCES.forEach(([name, handle, channelId, note], index) => {
+    const feedUrl = youtubeFeedUrl(channelId);
+    suggestions.push({
+      id: `catalog-youtube-${index + 1}`,
+      name,
+      type: "YouTube",
+      locator: handle,
+      cadence: "Daily",
+      config: { mode: "channel", channel: handle, channelId, feedUrl, maxItems: 5 },
+      rationale: note,
+      confidence: 0.62,
+      selectedByDefault: false,
+      catalog: "YouTube catalog",
+    });
+  });
+  return suggestions.map((source, index) => sanitizeSourceSuggestion(source, index, { keepYears: true }));
+}
+
+function mergeSourceSuggestions(personalized = [], catalog = []) {
+  const seen = new Set();
+  const merged = [];
+  for (const source of [...personalized, ...catalog]) {
+    const key = `${source.type}:${String(source.locator || source.name || "").toLowerCase()}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    merged.push(source);
+  }
+  return merged;
 }
 
 function sanitizeBriefSetupDraft(item = {}, current = briefConfig()) {
@@ -805,6 +891,25 @@ function isDefaultOwnerName(name) {
 
 function sanitizeSourceConfig(type, config = {}, locator = "", options = {}) {
   const base = config && typeof config === "object" ? config : {};
+  if (type === "Crypto") {
+    const coins = Array.isArray(base.coins) ? base.coins : [];
+    const cleanedCoins = coins.map((coin) => ({
+      id: String(coin?.id || "").trim().toLowerCase(),
+      symbol: String(coin?.symbol || "").trim().toUpperCase(),
+      name: String(coin?.name || coin?.id || "").trim(),
+      image: String(coin?.image || coin?.thumb || "").trim(),
+    })).filter((coin) => coin.id).slice(0, 25);
+    const locatorCoins = String(locator || "").replace(/^coingecko:/i, "").split(",").map((item) => item.trim().toLowerCase()).filter(Boolean);
+    return {
+      mode: "coingecko",
+      provider: "coingecko",
+      coins: cleanedCoins.length ? cleanedCoins : locatorCoins.map((coinId) => ({ id: coinId, symbol: coinId.toUpperCase(), name: coinId })),
+      vsCurrency: String(base.vsCurrency || "usd").trim().toLowerCase() || "usd",
+      includeMarketCap: base.includeMarketCap !== false,
+      include24hVolume: base.include24hVolume !== false,
+      include24hChange: base.include24hChange !== false,
+    };
+  }
   if (type === "Calendar") {
     return {
       mode: "google",
@@ -1866,6 +1971,32 @@ function redditRssUrlForSource(source) {
 
 async function fetchRedditSource(source) {
   const config = source.config || {};
+  if (redditCredential().enabled && redditCredential().data.clientId) {
+    const payload = await fetchRedditOAuthJson(redditOAuthPathForSource(source));
+    const parsedPosts = (payload.data?.children || []).map((child) => child.data).filter(Boolean);
+    const posts = parsedPosts.filter((post) => publishedToday(post.created_utc ? new Date(post.created_utc * 1000).toISOString() : null));
+    let inserted = 0;
+    for (const post of posts) {
+      const body = [post.selftext, post.url && !String(post.url).includes("reddit.com") ? `Link: ${post.url}` : ""].filter(Boolean).join("\n");
+      const saved = saveNormalizedItem({
+        source,
+        stableId: post.name || post.id,
+        canonicalUrl: `https://www.reddit.com${post.permalink || ""}`,
+        title: post.title,
+        body,
+        publishedAt: post.created_utc ? new Date(post.created_utc * 1000).toISOString() : null,
+        relevanceScore: scoreText(`${post.title} ${body}`, config.keywords || config.query),
+        risingScore: Math.min(1, Math.log10(Number(post.score || 0) + Number(post.num_comments || 0) + 1) / 4),
+      });
+      if (saved.inserted) inserted += 1;
+    }
+    const fetchedAt = now();
+    const nextConfig = { ...config, lastFetchedAt: fetchedAt, lastFetchedCount: parsedPosts.length, lastFetchedTodayCount: posts.length, lastInsertedCount: inserted, lastFetchMode: "oauth-api" };
+    run("UPDATE sources SET config_json=$config, updated_at=$t WHERE id=$id", { $id: source.id, $config: json(nextConfig), $t: fetchedAt });
+    run("UPDATE connector_credentials SET last_checked_at=$t, last_error='', updated_at=$t WHERE provider=$provider", { $provider: REDDIT_PROVIDER, $t: fetchedAt });
+    audit("reddit.fetched", "source", source.id, `Fetched ${parsedPosts.length} Reddit OAuth posts; ${posts.length} published today; inserted ${inserted}`, { fetched: parsedPosts.length, today: posts.length, inserted, mode: "oauth-api" }, "system");
+    return { ok: true, skipped: false, seen: parsedPosts.length, today: posts.length, inserted, mode: "oauth-api" };
+  }
   const response = await fetchWithTimeout(redditUrlForSource(source), { headers: { "User-Agent": "PillarBrief/0.1 by operator" } });
   if (response.status === 403 || response.status === 429) {
     const rss = await fetchWithTimeout(redditRssUrlForSource(source), { headers: { "User-Agent": "PillarBrief/0.1 by operator" } });
@@ -1962,6 +2093,80 @@ async function fetchWebSource(source) {
   return { ok: true, skipped: false, seen: 1, inserted };
 }
 
+function formatMarketValue(value, currency = "usd") {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return "n/a";
+  const prefix = currency.toLowerCase() === "usd" ? "$" : `${currency.toUpperCase()} `;
+  if (Math.abs(n) >= 1000) return `${prefix}${n.toLocaleString("en-US", { maximumFractionDigits: 0 })}`;
+  if (Math.abs(n) >= 1) return `${prefix}${n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  return `${prefix}${n.toLocaleString("en-US", { maximumSignificantDigits: 6 })}`;
+}
+
+function formatMarketPercent(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return "n/a";
+  return `${n >= 0 ? "+" : ""}${n.toFixed(2)}%`;
+}
+
+async function fetchCryptoSource(source) {
+  const config = source.config || {};
+  const coins = Array.isArray(config.coins) ? config.coins.filter((coin) => coin?.id).slice(0, 25) : [];
+  if (!coins.length) return { ok: true, skipped: true, reason: "No CoinGecko coins selected", seen: 0, inserted: 0 };
+  const currency = String(config.vsCurrency || "usd").toLowerCase();
+  const params = new URLSearchParams({
+    ids: coins.map((coin) => coin.id).join(","),
+    vs_currencies: currency,
+    include_market_cap: config.includeMarketCap === false ? "false" : "true",
+    include_24hr_vol: config.include24hVolume === false ? "false" : "true",
+    include_24hr_change: config.include24hChange === false ? "false" : "true",
+    include_last_updated_at: "true",
+    precision: "full",
+  });
+  const response = await fetchWithTimeout(`https://api.coingecko.com/api/v3/simple/price?${params}`, {
+    headers: { accept: "application/json", "User-Agent": "PillarBrief/0.1" },
+  }, 15000);
+  if (!response.ok) throw new Error(`CoinGecko fetch failed: ${response.status} ${response.statusText}`);
+  const payload = await response.json();
+  const snapshot = coins.map((coin) => {
+    const data = payload[coin.id] || {};
+    return {
+      id: coin.id,
+      name: coin.name || coin.id,
+      symbol: coin.symbol || coin.id,
+      price: data[currency],
+      marketCap: data[`${currency}_market_cap`],
+      volume24h: data[`${currency}_24h_vol`],
+      change24h: data[`${currency}_24h_change`],
+      lastUpdatedAt: data.last_updated_at ? new Date(Number(data.last_updated_at) * 1000).toISOString() : null,
+    };
+  });
+  const lines = snapshot.map((row) => {
+    const parts = [
+      `${row.name} (${String(row.symbol || "").toUpperCase()}): ${formatMarketValue(row.price, currency)}`,
+      `24h ${formatMarketPercent(row.change24h)}`,
+    ];
+    if (config.includeMarketCap !== false) parts.push(`market cap ${formatMarketValue(row.marketCap, currency)}`);
+    if (config.include24hVolume !== false) parts.push(`24h volume ${formatMarketValue(row.volume24h, currency)}`);
+    if (row.lastUpdatedAt) parts.push(`updated ${row.lastUpdatedAt}`);
+    return `- ${parts.join("; ")}`;
+  });
+  const fetchedAt = now();
+  const saved = saveNormalizedItem({
+    source,
+    stableId: `coingecko:${coins.map((coin) => coin.id).join(",")}:${new Date(fetchedAt).toISOString().slice(0, 10)}`,
+    canonicalUrl: "https://www.coingecko.com/",
+    title: `Crypto market snapshot: ${coins.map((coin) => coin.symbol || coin.id).join(", ").toUpperCase()}`,
+    body: [`CoinGecko ${currency.toUpperCase()} market snapshot for configured crypto assets.`, ...lines].join("\n"),
+    publishedAt: fetchedAt,
+    relevanceScore: 0.95,
+    risingScore: Math.min(1, snapshot.reduce((max, row) => Math.max(max, Math.abs(Number(row.change24h) || 0)), 0) / 10),
+  });
+  const nextConfig = { ...config, lastFetchedAt: fetchedAt, lastFetchedCount: snapshot.length, lastInsertedCount: saved.inserted ? 1 : 0, lastSnapshot: snapshot };
+  run("UPDATE sources SET config_json=$config, updated_at=$t WHERE id=$id", { $id: source.id, $config: json(nextConfig), $t: fetchedAt });
+  audit("crypto.fetched", "source", source.id, `Fetched ${snapshot.length} CoinGecko prices`, { coins: snapshot.map((row) => row.id), inserted: saved.inserted ? 1 : 0 }, "system");
+  return { ok: true, skipped: false, seen: snapshot.length, inserted: saved.inserted ? 1 : 0, snapshot, mode: "coingecko" };
+}
+
 function eventDateTimeValue(value = {}) {
   return value.dateTime || value.date || "";
 }
@@ -2031,11 +2236,14 @@ async function fetchGoogleCalendarSource(source) {
   const config = source.config || {};
   const credential = googleCalendarCredential();
   const selectedCalendarIds = Array.isArray(credential.data.selectedCalendarIds) && credential.data.selectedCalendarIds.length ? credential.data.selectedCalendarIds : ["primary"];
-  const calendarIds = Array.isArray(config.calendarIds) && config.calendarIds.length
-    ? config.calendarIds
+  const usesSettingsSelection = source.locator === "selected" || !config.calendarId || config.calendarId === "selected";
+  const calendarIds = usesSettingsSelection
+    ? selectedCalendarIds
     : config.calendarId && config.calendarId !== "selected"
       ? [config.calendarId]
-      : selectedCalendarIds;
+      : Array.isArray(config.calendarIds) && config.calendarIds.length
+        ? config.calendarIds
+        : selectedCalendarIds;
   const accessToken = await refreshGoogleCalendarAccessToken();
   const rawEventsByCalendar = [];
   for (const calendarId of calendarIds) {
@@ -2066,7 +2274,8 @@ async function fetchGoogleCalendarSource(source) {
   }
   const agenda = calendarAgendaFromEvents(events, source, config);
   const fetchedAt = now();
-  const nextConfig = { ...config, calendarId: config.calendarId || "selected", calendarIds, lastFetchedAt: fetchedAt, lastFetchedCount: rawEvents.length, lastFetchedTodayCount: events.length, lastInsertedCount: inserted, lastAgenda: agenda };
+  const { calendarIds: _staleCalendarIds, ...configWithoutStaleCalendarIds } = config;
+  const nextConfig = { ...configWithoutStaleCalendarIds, calendarId: usesSettingsSelection ? "selected" : config.calendarId, lastFetchedCalendarIds: calendarIds, lastFetchedAt: fetchedAt, lastFetchedCount: rawEvents.length, lastFetchedTodayCount: events.length, lastInsertedCount: inserted, lastAgenda: agenda };
   run("UPDATE sources SET config_json=$config, updated_at=$t WHERE id=$id", { $id: source.id, $config: json(nextConfig), $t: fetchedAt });
   audit("calendar.fetched", "source", source.id, `Fetched ${events.length} Google Calendar event${events.length === 1 ? "" : "s"} for today`, { fetched: rawEvents.length, today: events.length, inserted, calendarIds }, "system");
   return { ok: true, skipped: false, seen: rawEvents.length, today: events.length, inserted, calendarIds, agenda };
@@ -2075,6 +2284,127 @@ async function fetchGoogleCalendarSource(source) {
 function xBearerToken() {
   const row = get("SELECT * FROM connector_credentials WHERE provider='x'");
   return row?.enabled && row.api_key ? row.api_key : "";
+}
+
+const REDDIT_PROVIDER = "reddit";
+function redditCredential() {
+  const row = get("SELECT * FROM connector_credentials WHERE provider=$provider", { $provider: REDDIT_PROVIDER });
+  const data = parse(row?.api_key, {});
+  const envClientId = process.env.REDDIT_CLIENT_ID || process.env.PILLAR_REDDIT_CLIENT_ID || "";
+  const envClientSecret = process.env.REDDIT_CLIENT_SECRET || process.env.PILLAR_REDDIT_CLIENT_SECRET || "";
+  return {
+    row,
+    enabled: !!row?.enabled || !!envClientId,
+    data: {
+      ...data,
+      clientId: data.clientId || envClientId,
+      clientSecret: data.clientSecret || envClientSecret,
+      grantType: data.grantType || (data.clientSecret || envClientSecret ? "client_credentials" : "installed_client"),
+      deviceId: data.deviceId || "DO_NOT_TRACK_THIS_DEVICE",
+    },
+  };
+}
+
+function redditPublicConnector({ row, data, enabled } = {}) {
+  const source = data || parse(row?.api_key, {});
+  const hasClientId = !!(source.clientId || process.env.REDDIT_CLIENT_ID || process.env.PILLAR_REDDIT_CLIENT_ID);
+  const isEnabled = !!enabled || !!process.env.REDDIT_CLIENT_ID || !!process.env.PILLAR_REDDIT_CLIENT_ID;
+  return {
+    provider: REDDIT_PROVIDER,
+    enabled: isEnabled,
+    apiKeySaved: hasClientId,
+    credentialStatus: hasClientId ? "saved" : "missing",
+    status: isEnabled && hasClientId ? "ready" : "pending credentials",
+    grantType: source.grantType || (source.clientSecret ? "client_credentials" : "installed_client"),
+    tokenExpiresAt: source.expiresAt || null,
+    lastCheckedAt: row?.last_checked_at || null,
+    lastError: row?.last_error || null,
+    updatedAt: row?.updated_at || null,
+  };
+}
+
+function saveRedditCredential(data = {}, { enabled = true, error = "" } = {}) {
+  const t = now();
+  run(`INSERT INTO connector_credentials (provider, api_key, enabled, last_error, updated_at)
+       VALUES ($provider, $apiKey, $enabled, $err, $t)
+       ON CONFLICT(provider) DO UPDATE SET api_key=$apiKey, enabled=$enabled, last_error=$err, updated_at=$t`, {
+    $provider: REDDIT_PROVIDER,
+    $apiKey: json(data),
+    $enabled: enabled ? 1 : 0,
+    $err: error,
+    $t: t,
+  });
+}
+
+async function refreshRedditAccessToken({ force = false } = {}) {
+  const credential = redditCredential();
+  const data = credential.data;
+  if (!credential.enabled) throw new Error("Reddit connector is not enabled.");
+  if (!data.clientId) throw new Error("Reddit client ID is missing.");
+  if (!force && data.accessToken && Number(data.expiresAt || 0) > Date.now() + 60000) return data.accessToken;
+  const grantType = data.grantType === "installed_client" ? "installed_client" : "client_credentials";
+  const body = new URLSearchParams();
+  if (grantType === "installed_client") {
+    body.set("grant_type", "https://oauth.reddit.com/grants/installed_client");
+    body.set("device_id", String(data.deviceId || "DO_NOT_TRACK_THIS_DEVICE"));
+  } else {
+    body.set("grant_type", "client_credentials");
+  }
+  const basic = Buffer.from(`${data.clientId}:${data.clientSecret || ""}`).toString("base64");
+  const response = await fetchWithTimeout("https://www.reddit.com/api/v1/access_token", {
+    method: "POST",
+    headers: {
+      Authorization: `Basic ${basic}`,
+      "Content-Type": "application/x-www-form-urlencoded",
+      "User-Agent": "PillarBrief/0.1 by operator",
+    },
+    body,
+  }, 15000);
+  if (!response.ok) throw new Error(`Reddit OAuth failed: ${response.status} ${response.statusText}`);
+  const token = await response.json();
+  if (!token.access_token) throw new Error("Reddit OAuth did not return an access token.");
+  const nextData = {
+    ...data,
+    grantType,
+    accessToken: token.access_token,
+    tokenType: token.token_type || "bearer",
+    scope: token.scope || data.scope || "",
+    expiresAt: Date.now() + Number(token.expires_in || 3600) * 1000,
+  };
+  saveRedditCredential(nextData, { enabled: true });
+  return nextData.accessToken;
+}
+
+async function fetchRedditOAuthJson(path) {
+  const token = await refreshRedditAccessToken();
+  const response = await fetchWithTimeout(`https://oauth.reddit.com${path}`, {
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "User-Agent": "PillarBrief/0.1 by operator",
+    },
+  }, 15000);
+  if (!response.ok) {
+    const reset = response.headers.get("x-ratelimit-reset");
+    const suffix = response.status === 429 && reset ? `; rate limit reset in ${reset}s` : "";
+    throw new Error(`Reddit OAuth fetch failed: ${response.status} ${response.statusText}${suffix}`);
+  }
+  return response.json();
+}
+
+function redditOAuthPathForSource(source) {
+  const config = source.config || {};
+  const limit = Math.max(5, Math.min(50, Number(config.maxItems || 10)));
+  if (config.mode === "search") {
+    const params = new URLSearchParams({ q: config.query || source.locator, sort: config.sort || "new", t: "day", limit: String(limit), raw_json: "1" });
+    return `/search?${params}`;
+  }
+  if (config.mode === "user") {
+    const user = String(config.username || source.locator || "").replace(/^u\//, "").replace(/^@/, "");
+    return `/user/${encodeURIComponent(user)}/submitted?limit=${limit}&raw_json=1`;
+  }
+  const subreddit = String(config.subreddits || source.locator || "").split(",")[0].trim().replace(/^r\//, "").replace(/^subreddits:/, "");
+  const sort = ["hot", "top"].includes(config.sort) ? config.sort : "new";
+  return `/r/${encodeURIComponent(subreddit)}/${sort}?limit=${limit}&raw_json=1`;
 }
 
 const GOOGLE_CALENDAR_PROVIDER = "google_calendar";
@@ -2386,10 +2716,11 @@ async function fetchSourceCollection({ useRecentCache = false, onProgress } = {}
   const redditSources = activeSources.filter((s) => s.type === "Reddit");
   const webSources = activeSources.filter((s) => s.type === "Web");
   const calendarSources = activeSources.filter((s) => s.type === "Calendar");
+  const cryptoSources = activeSources.filter((s) => s.type === "Crypto");
   const transcriptionSources = podcastSources.filter((s) => s.config?.transcribeNewEpisodes !== false);
   const transcriptionResults = [];
   let checkedSources = 0;
-  const totalFetchSources = transcriptionSources.length + xSources.length + rssSources.length + redditSources.length + webSources.length + calendarSources.length;
+  const totalFetchSources = transcriptionSources.length + xSources.length + rssSources.length + redditSources.length + webSources.length + calendarSources.length + cryptoSources.length;
   const reportFetchProgress = (label) => {
     checkedSources += 1;
     onProgress?.({
@@ -2457,6 +2788,18 @@ async function fetchSourceCollection({ useRecentCache = false, onProgress } = {}
       reportFetchProgress(`Web: ${source.name}`);
     }
   }
+  const cryptoResults = [];
+  for (const source of cryptoSources) {
+    try {
+      const cached = useRecentCache ? recentSourceCache(source) : null;
+      cryptoResults.push(cached ? { sourceId: source.id, sourceName: source.name, ...cached } : { sourceId: source.id, sourceName: source.name, ...(await fetchCryptoSource(source)) });
+    } catch (error) {
+      cryptoResults.push({ sourceId: source.id, sourceName: source.name, ok: false, error: error.message || "CoinGecko fetch failed" });
+      audit("crypto.fetch_failed", "source", source.id, error.message || "CoinGecko fetch failed", {}, "system");
+    } finally {
+      reportFetchProgress(`Crypto: ${source.name}`);
+    }
+  }
   const calendarResults = [];
   for (const source of calendarSources) {
     try {
@@ -2474,6 +2817,7 @@ async function fetchSourceCollection({ useRecentCache = false, onProgress } = {}
     + rssResults.reduce((sum, result) => sum + Number(result.inserted || 0) + Number(result.preflightInserted || 0), 0)
     + redditResults.reduce((sum, result) => sum + Number(result.inserted || 0) + Number(result.preflightInserted || 0), 0)
     + webResults.reduce((sum, result) => sum + Number(result.inserted || 0) + Number(result.preflightInserted || 0), 0)
+    + cryptoResults.reduce((sum, result) => sum + Number(result.inserted || 0) + Number(result.preflightInserted || 0), 0)
     + calendarResults.reduce((sum, result) => sum + Number(result.inserted || 0) + Number(result.preflightInserted || 0), 0);
   return {
     activeSources,
@@ -2483,6 +2827,7 @@ async function fetchSourceCollection({ useRecentCache = false, onProgress } = {}
     redditSources,
     webSources,
     calendarSources,
+    cryptoSources,
     transcriptionSources,
     transcriptionResults,
     xResults,
@@ -2490,8 +2835,9 @@ async function fetchSourceCollection({ useRecentCache = false, onProgress } = {}
     redditResults,
     webResults,
     calendarResults,
+    cryptoResults,
     itemCount,
-    sourceResults: { xFetches: xResults, rssFetches: rssResults, redditFetches: redditResults, webFetches: webResults, calendarFetches: calendarResults, calendarAgenda: calendarResults.flatMap((result) => result.agenda || []), podcastTranscriptions: transcriptionResults },
+    sourceResults: { xFetches: xResults, rssFetches: rssResults, redditFetches: redditResults, webFetches: webResults, cryptoFetches: cryptoResults, calendarFetches: calendarResults, calendarAgenda: calendarResults.flatMap((result) => result.agenda || []), podcastTranscriptions: transcriptionResults },
   };
 }
 
@@ -2638,6 +2984,256 @@ function startBriefDeliveryScheduler() {
   timer.unref?.();
 }
 
+const DEFAULT_RSS_SOURCE_CATALOG_VERSION = "2026-06-22-rss-catalog-v2";
+const DEFAULT_RSS_SOURCES = [
+  ["Reuters via Google News", "https://news.google.com/rss/search?q=when:24h+allinurl:reuters.com&hl=en-US&gl=US&ceid=US:en", "Wire service workaround: Reuters has no native public RSS; Google News search limited to last 24h."],
+  ["Associated Press via Google News", "https://news.google.com/rss/search?q=when:24h+allinurl:apnews.com&hl=en-US&gl=US&ceid=US:en", "Wire service workaround: AP via Google News search limited to last 24h."],
+  ["AFP via Google News", "https://news.google.com/rss/search?q=when:24h+allinurl:afp.com&hl=en-US&gl=US&ceid=US:en", "Wire service workaround: AFP has no general public feed; Google News search limited to last 24h."],
+  ["Bloomberg Markets", "https://feeds.bloomberg.com/markets/news.rss", "Bloomberg markets feed; metered/full text may be gated."],
+  ["Bloomberg Technology", "https://feeds.bloomberg.com/technology/news.rss", "Bloomberg technology feed; metered/full text may be gated."],
+  ["Bloomberg Politics", "https://feeds.bloomberg.com/politics/news.rss", "Bloomberg politics feed; metered/full text may be gated."],
+  ["BBC World News", "https://feeds.bbci.co.uk/news/world/rss.xml", "BBC World RSS feed."],
+  ["New York Times Home Page", "https://rss.nytimes.com/services/xml/rss/nyt/HomePage.xml", "NYT homepage RSS; subscription may gate full text."],
+  ["New York Times World", "https://rss.nytimes.com/services/xml/rss/nyt/World.xml", "NYT World RSS; subscription may gate full text."],
+  ["Washington Post World", "https://feeds.washingtonpost.com/rss/world", "Washington Post world RSS; subscription may gate full text."],
+  ["Wall Street Journal World News", "https://feeds.content.dowjones.io/public/rss/RSSWorldNews", "WSJ world RSS; subscription may gate full text."],
+  ["Wall Street Journal Business", "https://feeds.content.dowjones.io/public/rss/WSJcomUSBusiness", "WSJ business RSS; subscription may gate full text."],
+  ["The Guardian World", "https://www.theguardian.com/world/rss", "Guardian world RSS feed."],
+  ["The Economist Latest", "https://www.economist.com/latest/rss.xml", "Economist latest RSS; subscription may gate full text."],
+  ["NPR News", "https://feeds.npr.org/1001/rss.xml", "NPR News RSS feed."],
+  ["PBS NewsHour", "https://www.pbs.org/newshour/feeds/rss/headlines", "PBS NewsHour headlines RSS feed."],
+  ["Financial Times Home", "https://www.ft.com/rss/home", "FT home RSS; subscription may gate full text."],
+  ["Christian Science Monitor", "https://rss.csmonitor.com/feeds/all", "Christian Science Monitor all RSS feed."],
+  ["The Atlantic", "https://www.theatlantic.com/feed/all/", "The Atlantic all feed; metered/full text may be gated."],
+  ["Politico Politics News", "https://rss.politico.com/politics-news.xml", "Politico politics news RSS feed."],
+  ["The Hill", "https://thehill.com/rss/syndicator/19110", "The Hill syndicator RSS feed."],
+  ["Reason", "https://reason.com/feed/", "Reason RSS feed."],
+  ["National Review", "https://www.nationalreview.com/feed/", "National Review RSS; metered/full text may be gated."],
+  ["The Dispatch", "https://thedispatch.com/feed/", "The Dispatch RSS; most full text may be paid."],
+  ["Vox", "https://www.vox.com/rss/index.xml", "Vox RSS feed."],
+  ["NEJM Current Issue", "https://www.nejm.org/action/showFeed?type=etoc&feed=rss&jc=nejm", "NEJM current issue RSS; full text may be gated and NEJM may block some scrapers."],
+  ["The Lancet", "https://www.thelancet.com/rssfeed/lancet_current.xml", "Lancet current issue RSS; registration/full text may be gated."],
+  ["JAMA Current Issue", "https://jamanetwork.com/rss/site_3/67.xml", "JAMA current issue RSS; full text may be gated."],
+  ["BMJ Recent", "https://news.google.com/rss/search?q=when:24h+site:bmj.com&hl=en-US&gl=US&ceid=US:en", "BMJ coverage via Google News RSS workaround because direct BMJ RSS challenges automated fetches."],
+  ["Nature", "https://www.nature.com/nature.rss", "Nature RSS; full text may be gated."],
+  ["Science News", "https://www.science.org/rss/news_current.xml", "Science / AAAS current news RSS."],
+  ["Cell", "https://www.cell.com/cell/current.rss", "Cell current issue RSS; full text may be gated."],
+  ["PNAS Latest", "https://www.pnas.org/action/showFeed?type=etoc&feed=rss&jc=pnas", "PNAS RSS; full text may depend on embargo/access."],
+  ["Cochrane Library", "https://news.google.com/rss/search?q=when:24h+site:cochranelibrary.com&hl=en-US&gl=US&ceid=US:en", "Cochrane coverage via Google News RSS workaround because direct Cochrane RSS is cookie-gated."],
+  ["CDC Newsroom", "https://tools.cdc.gov/api/v2/resources/media/132608.rss", "CDC Newsroom RSS feed."],
+  ["WHO News", "https://www.who.int/rss-feeds/news-english.xml", "WHO English news RSS feed."],
+  ["NIH News Releases", "https://news.google.com/rss/search?q=when:24h+site:nih.gov/news-events/news-releases&hl=en-US&gl=US&ceid=US:en", "NIH news release coverage via Google News RSS workaround because direct NIH RSS is Cloudflare-blocked."],
+  ["Scientific American", "https://www.scientificamerican.com/platform/syndication/rss/", "Scientific American official syndication RSS; metered/full text may be gated."],
+  ["STAT News", "https://www.statnews.com/feed/", "STAT News feed; STAT+ full text may be gated."],
+  ["MIT Technology Review", "https://www.technologyreview.com/feed/", "MIT Technology Review feed; metered/full text may be gated."],
+  ["FactCheck.org", "https://www.factcheck.org/feed/", "FactCheck.org RSS feed."],
+  ["PolitiFact", "https://www.politifact.com/rss/all/", "PolitiFact all RSS feed."],
+  ["Snopes", "https://www.snopes.com/feed/", "Snopes RSS feed."],
+];
+
+const DEFAULT_REDDIT_SOURCE_CATALOG_VERSION = "2026-06-22-reddit-catalog-v2";
+const DEFAULT_REDDIT_SOURCES = [
+  ["r/worldnews", "worldnews", "News and world events foundation."],
+  ["r/news", "news", "General news and major current events."],
+  ["r/qualitynews", "qualitynews", "Higher-signal news submissions."],
+  ["r/NeutralPolitics", "NeutralPolitics", "Strictly sourced political discussion with low heat."],
+  ["r/TrueReddit", "TrueReddit", "Long-form and thoughtful articles."],
+  ["r/OutOfTheLoop", "OutOfTheLoop", "Context for stories, memes, and topics currently blowing up."],
+  ["r/technology", "technology", "Broad technology news."],
+  ["r/programming", "programming", "Programming, industry, and language news."],
+  ["r/technews", "technews", "Technology news headlines."],
+  ["r/Futurology", "Futurology", "Technology, science, and society overlap."],
+  ["r/artificial", "artificial", "Artificial intelligence developments."],
+  ["r/investing", "investing", "Steadier investing discussion and market news."],
+  ["r/finance", "finance", "Finance industry and macro news."],
+  ["r/personalfinance", "personalfinance", "Practical personal money management."],
+  ["r/economics", "economics", "Economics research and policy discussion."],
+  ["r/Bogleheads", "Bogleheads", "Long-term, evidence-based investing."],
+  ["r/DIY", "DIY", "Do-it-yourself projects and making."],
+  ["r/woodworking", "woodworking", "Woodworking projects and craft discussion."],
+  ["r/somethingimade", "somethingimade", "User-made projects across media and craft."],
+  ["r/functionalprint", "functionalprint", "Practical 3D printing projects."],
+  ["r/books", "books", "Books, publishing, and reading culture."],
+  ["r/Art", "Art", "Art and visual culture."],
+  ["r/movies", "movies", "Film news, discussion, and criticism."],
+  ["r/ArtefactPorn", "ArtefactPorn", "Historical objects and artifacts."],
+  ["r/museum", "museum", "Museum objects, exhibits, and cultural heritage."],
+  ["r/health", "health", "Health news and discussion."],
+  ["r/science", "science", "Broad research-first science coverage."],
+  ["r/Fitness", "Fitness", "Fitness training and health discussion."],
+  ["r/nutrition", "nutrition", "Nutrition discussion with an evidence-oriented bent."],
+  ["r/medicine", "medicine", "Clinician-oriented medicine news and discussion."],
+];
+
+const DEFAULT_X_SOURCE_CATALOG_VERSION = "2026-06-22-x-catalog-v2";
+const DEFAULT_X_SOURCES = [
+  ["X: Breaking news", "\"breaking news\" lang:en", "Evergreen global breaking-news search."],
+  ["X: #BreakingNews", "#BreakingNews lang:en", "Breaking-news hashtag search."],
+  ["X: World news", "\"world news\" lang:en", "Global world-news search."],
+  ["X: Reuters", "from:Reuters lang:en", "Reuters account search for wire coverage."],
+  ["X: Associated Press", "from:AP lang:en", "Associated Press account search for wire coverage."],
+  ["X: BBC Breaking", "from:BBCBreaking lang:en", "BBC Breaking account search."],
+  ["X: Geopolitics", "geopolitics lang:en", "Geopolitics search."],
+  ["X: US politics", "\"US politics\" lang:en", "US national politics search."],
+  ["X: AP news filter", "from:AP lang:en", "Associated Press posts. Unsupported news filter removed for this connector."],
+  ["X: Congress or White House", "(Congress OR \"White House\") lang:en", "Congress and White House search."],
+  ["X: Supreme Court", "\"Supreme Court\" lang:en", "Supreme Court search."],
+  ["X: AI popular", "AI lang:en", "AI search. Unsupported popularity operator removed for this connector."],
+  ["X: Artificial intelligence", "\"artificial intelligence\" lang:en", "Artificial intelligence search."],
+  ["X: #AI", "#AI lang:en", "AI hashtag search."],
+  ["X: Tech news", "\"tech news\" lang:en", "Technology news search."],
+  ["X: The Verge", "from:TheVerge lang:en", "The Verge account search."],
+  ["X: Markets", "markets lang:en", "Markets search."],
+  ["X: Stock market", "\"stock market\" lang:en", "Stock market search."],
+  ["X: #fintech", "#fintech lang:en", "Fintech hashtag search."],
+  ["X: Federal Reserve or rate cut", "(\"Federal Reserve\" OR \"rate cut\") lang:en", "Federal Reserve and rate-cut search."],
+  ["X: Bloomberg Business", "from:business lang:en", "Bloomberg Business account search."],
+  ["X: #science", "#science lang:en", "Science hashtag search."],
+  ["X: New study popular", "\"new study\" lang:en", "New study search. Unsupported popularity operator removed for this connector."],
+  ["X: Public health", "\"public health\" lang:en", "Public health search."],
+  ["X: #MedTwitter", "#MedTwitter lang:en", "Medical community hashtag search."],
+  ["X: #DIY", "#DIY lang:en", "DIY hashtag search."],
+  ["X: #woodworking", "#woodworking lang:en", "Woodworking hashtag search."],
+  ["X: #art", "#art lang:en", "Art hashtag search."],
+  ["X: Denver", "(Denver OR #Denver) lang:en", "Denver local search."],
+  ["X: Colorado news", "(\"Colorado news\" OR from:denverpost) lang:en", "Colorado news and Denver Post account search."],
+];
+
+const DEFAULT_PODCAST_SOURCE_CATALOG_VERSION = "2026-06-22-podcast-catalog-v2";
+const DEFAULT_PODCAST_SOURCES = [
+  ["The Jim Rutt Show", "https://jimruttshow.blubrry.net/feed/podcast/", "Game B, complexity, sensemaking, and deep systems conversations."],
+  ["Voices with Vervaeke", "https://rss.libsyn.com/shows/480795/destinations/4089831.xml", "John Vervaeke's dialogues on meaning, cognition, and wisdom."],
+  ["Theories of Everything", "https://feeds.megaphone.fm/TOE4643226064", "Curt Jaimungal on physics, consciousness, philosophy, and deep ideas."],
+  ["The Portal / Eric Weinstein", "https://feed.cdnstream1.com/zjb/feed/download/d9/8a/71/d98a71ac-d1a3-4d92-ab64-64b4ff3192d1.xml", "Intermittent deep conversations with Eric Weinstein."],
+  ["Nonzero", "https://api.substack.com/feed/podcast/17302.rss", "Robert Wright on evolution, meaning, politics, and geopolitics."],
+  ["Conversations with Tyler", "https://rss.libsyn.com/shows/137081/destinations/850607.xml", "Tyler Cowen interviews across economics, culture, politics, and ideas."],
+  ["The Diary Of A CEO", "https://rss2.flightcast.com/xmsftuzjjykcmqwolaqn6mdn", "Steven Bartlett on business, psychology, health, and performance."],
+  ["Hidden Forces", "https://rss.libsyn.com/shows/91567/destinations/457899.xml", "Demetri Kofinas on macro, systems, and civilization-scale questions."],
+  ["Lex Fridman Podcast", "https://lexfridman.com/feed/podcast/", "Long-form AI, science, philosophy, and wide-ranging interviews."],
+  ["The Joe Rogan Experience", "https://feeds.megaphone.fm/GLT1412515089", "Wide-ranging long-form interviews."],
+  ["Modern Wisdom", "https://feeds.megaphone.fm/SIXMSB5088139739", "Chris Williamson on psychology, health, culture, philosophy, and performance."],
+  ["The Tim Ferriss Show", "https://rss.art19.com/tim-ferriss-show", "Tactics, performance, business, and long-form interviews."],
+  ["Dwarkesh Podcast", "https://apple.dwarkesh-podcast.workers.dev/feed.rss", "Deep, well-prepared interviews on AI, economics, science, and strategy."],
+  ["Honestly with Bari Weiss", "https://feeds.megaphone.fm/RSV2347142881", "Interview-driven culture and politics from The Free Press."],
+  ["Hard Fork", "https://feeds.simplecast.com/6HKOhNgS", "NYT technology news and analysis."],
+  ["Lenny's Podcast", "https://api.substack.com/feed/podcast/10845.rss", "Product, growth, startups, and technology building."],
+  ["The TWIML AI Podcast", "https://feeds.megaphone.fm/MLN2155636147", "Technical machine learning and AI conversations."],
+  ["The a16z Show", "https://feeds.simplecast.com/JGE3yC0V", "Technology, startups, and venture-backed industry analysis."],
+  ["Acquired", "https://feeds.transistor.fm/acquired", "Deep company and business histories."],
+  ["The Rational Reminder", "https://rss.libsyn.com/shows/127327/destinations/763774.xml", "Evidence-based investing with Ben Felix and team."],
+  ["Odd Lots", "https://www.omnycontent.com/d/playlist/e73c998e-6e60-432f-8610-ae210140c5b1/8a94442e-5a74-4fa2-8b8d-ae27003a8d6b/982f5071-765c-403d-969d-ae27003a8d83/podcast.rss", "Bloomberg markets and unusual corners of the economy."],
+  ["Animal Spirits", "https://feeds.megaphone.fm/TCP6464651487", "Approachable markets and investing discussion."],
+  ["We Study Billionaires", "https://feeds.megaphone.fm/PPLLC8974708240", "The Investor's Podcast Network on investing and business."],
+  ["Planet Money", "https://feeds.npr.org/510289/podcast.xml", "NPR economics stories and explainers."],
+  ["Huberman Lab", "https://feeds.megaphone.fm/hubermanlab", "Neuroscience, health, behavior, and performance."],
+  ["Radiolab", "https://feeds.simplecast.com/EmVW7VGp", "Science, big ideas, and narrative audio."],
+  ["The Peter Attia Drive", "https://rss.libsyn.com/shows/121729/destinations/713489.xml", "Longevity, medicine, and health deep dives."],
+  ["Science Vs", "https://feeds.megaphone.fm/sciencevs", "Evidence checks on popular science and health claims."],
+  ["Sean Carroll's Mindscape", "https://rss.libsyn.com/shows/604590/destinations/5264190.xml", "Physics, philosophy, science, society, and ideas."],
+  ["99% Invisible", "https://feeds.simplecast.com/BqbsxVfO", "Design, architecture, and how made things shape the world."],
+];
+
+const DEFAULT_YOUTUBE_SOURCE_CATALOG_VERSION = "2026-06-22-youtube-catalog-v2";
+const DEFAULT_YOUTUBE_SOURCES = [
+  ["Lex Fridman", "@lexfridman", "UCSHZKyawb77ixDdsGog4iWA", "AI, science, technology, and long-form conversations."],
+  ["The Joe Rogan Experience", "@joerogan", "UCzQUP1qoWDoEbmsQxvdjxgQ", "YouTube channel for Rogan clips and available video posts; full episodes may live elsewhere."],
+  ["The Diary Of A CEO", "@TheDiaryOfACEO", "UCGq-a57w-aPwyi3pW7XLiHw", "Steven Bartlett on business, health, psychology, and performance."],
+  ["Modern Wisdom / Chris Williamson", "@ChrisWillx", "UCIaH-gZIVC432YRjNVvnyCA", "Chris Williamson interviews across psychology, health, culture, and philosophy."],
+  ["The Tim Ferriss Show", "@timferriss", "UCznv7Vf9nBdJYvBagFdAHWw", "Tactics, performance, and wide-ranging guests."],
+  ["Dwarkesh Patel", "@DwarkeshPatel", "UCXl4i9dYBrFOabk0xGmbkRA", "Deep prepared interviews on AI, history, economics, and strategy."],
+  ["John Vervaeke", "@johnvervaeke", "UCpqDUjTsof-kTNpnyWper_Q", "Meaning, cognitive science, dialogues, and Awakening from the Meaning Crisis."],
+  ["The Jim Rutt Show", "@JimRuttShow", "UCw1Sl_jFYRl2gbkBLp7w4lg", "Game B, complexity, sensemaking, and deep systems conversations."],
+  ["Rebel Wisdom", "@RebelWisdom", "UCFQ6Gptuq-sLflbJ4YY3Umw", "Sensemaking and culture; output may be intermittent."],
+  ["Theories of Everything", "@TheoriesofEverything", "UCdWIQh9DGG6uhJk8eyIFl1w", "Curt Jaimungal on physics, consciousness, and deep dialogues."],
+  ["Nonzero", "@Nonzero", "UCeamuoYuBeRnRRbmq5CmjVg", "Robert Wright on evolutionary psychology, meaning, and geopolitics."],
+  ["Eric Weinstein / The Portal", "@EricWeinsteinPhD", "UCR85PW_B_7_Aisx5vNS7Gjw", "Eric Weinstein and Portal-related intermittent deep content."],
+  ["Two Minute Papers", "@TwoMinutePapers", "UCbfYPyITQ-7l4upoX8nvctg", "Regular AI research explainers."],
+  ["Fireship", "@Fireship", "UCsBjURrPoezykLs9EqgamOA", "Fast, frequent developer and technology news."],
+  ["ColdFusion", "@ColdFusion", "UC4QZ_LsYcvcq7qOsOhpAX4A", "Technology and business explainers."],
+  ["Marques Brownlee / MKBHD", "@mkbhd", "UCBJycsmduvYEL83R_U4JriQ", "Consumer technology and product reviews."],
+  ["Yannic Kilcher", "@YannicKilcher", "UCZHmQk67mSJgfCCTn7xBfew", "Technical AI paper breakdowns and commentary."],
+  ["The Plain Bagel", "@ThePlainBagel", "UCFCEuCsyWP0YkP3CZ3Mr01Q", "Evidence-oriented finance and investing explainers."],
+  ["Patrick Boyle", "@PBoyle", "UCASM0cgfkJxQ1ICmRilfHLw", "Markets commentary and financial explainers."],
+  ["Ben Felix / Rational Reminder", "@BenFelixCSI", "UCDXTQ8nWmx_EhZ2v-kp7QxA", "Research-driven investing and Boglehead-aligned finance."],
+  ["Bloomberg Originals", "@business", "UCUMZ7gohGI9HcU9VNsr2FJQ", "Bloomberg documentaries and explainers."],
+  ["Aswath Damodaran", "@AswathDamodaranonValuation", "UCLvnJL8htRR1T9cbSccaoVw", "NYU valuation lectures and market valuation analysis."],
+  ["Veritasium", "@veritasium", "UCHnyfMqiRRG1u-2MsSQLbXA", "Physics and science videos with high production value."],
+  ["Kurzgesagt", "@kurzgesagt", "UCsXVk37bltHxD1rDPwtNM8Q", "Animated science explainers."],
+  ["SciShow", "@SciShow", "UCZYTClx2T1of7BRZ86-8fow", "Frequent broad science news and explainers."],
+  ["Huberman Lab", "@hubermanlab", "UC2D2CMWXMOVWx7giW1n3LIg", "Health and neuroscience content from Andrew Huberman."],
+  ["PBS Space Time", "@pbsspacetime", "UC7_gcs09iThXybpVgjHZ_7g", "Physics and deeper science explainers."],
+  ["Be Smart", "@besmart", "UCH4BNI0-FOK2dMXoFtViWHw", "Accessible science explainers."],
+  ["This Old Tony", "@ThisOldTony", "UC5NO8MgTQKHAWXp6z8Xl7yQ", "Machining, making, and dry workshop humor."],
+  ["Adam Savage's Tested", "@tested", "UCiDJtJKMICpb9B1qf7qjEOA", "Building, making, tools, and problem solving."],
+  ["Stumpy Nubs", "@StumpyNubs", "UCstwpLSByklww1YojZN-KiQ", "Practical woodworking."],
+  ["Mark Rober", "@MarkRober", "UCY1kMZp36IQSyNx_9h4mpCg", "Engineering projects and spectacle."],
+];
+
+const DEFAULT_RESEARCH_SOURCE_CATALOG_VERSION = "2026-06-22-research-catalog-v2";
+
+function seedSourceRecord({ name, type = "RSS", locator, status = "active", note = "", config }) {
+  const t = now();
+  const existing = get("SELECT * FROM sources WHERE type=$type AND (name=$name OR locator=$locator)", { $type: type, $name: name, $locator: locator });
+  if (existing) return existing.id;
+  const sourceId = id("src");
+  run(`INSERT INTO sources (id, name, type, locator, cadence, status, approval_status, credentials_status, note, config_json, created_at, updated_at)
+       VALUES ($id, $name, $type, $locator, 'Daily', $status, 'approved', $credentials, $note, $config, $t, $t)`, {
+    $id: sourceId,
+    $name: name,
+    $type: type,
+    $locator: locator,
+    $status: status,
+    $credentials: sourceCredentialStatus(type),
+    $note: note,
+    $config: json(config || (type === "RSS" ? { mode: "feed", feedUrl: locator } : defaultSourceConfig(type))),
+    $t: t,
+  });
+  return sourceId;
+}
+
+function setCatalogMarker(key, value) {
+  run(`INSERT INTO app_state (key, value, updated_at) VALUES ($key, $value, $t)
+       ON CONFLICT(key) DO UPDATE SET value=$value, updated_at=$t`, { $key: key, $value: value, $t: now() });
+}
+
+function seedDefaultRssSources() {
+  const markerKey = "default_rss_source_catalog_version";
+  if (get("SELECT value FROM app_state WHERE key=$key", { $key: markerKey })?.value === DEFAULT_RSS_SOURCE_CATALOG_VERSION) return;
+  for (const [name, feedUrl, note] of DEFAULT_RSS_SOURCES) seedSourceRecord({ name, locator: feedUrl, note, config: { mode: "feed", feedUrl } });
+  seedSourceRecord({
+    name: "PubMed Custom RSS",
+    type: "Web",
+    locator: "https://pubmed.ncbi.nlm.nih.gov/",
+    status: "paused",
+    note: "Paused placeholder: sign into NCBI, run a PubMed search, click Create RSS, then replace this URL.",
+    config: { mode: "page", url: "https://pubmed.ncbi.nlm.nih.gov/" },
+  });
+  setCatalogMarker(markerKey, DEFAULT_RSS_SOURCE_CATALOG_VERSION);
+}
+
+function youtubeFeedUrl(channelId) {
+  return `https://www.youtube.com/feeds/videos.xml?channel_id=${channelId}`;
+}
+
+function seedDefaultResearchSources() {
+  const markerKey = "default_research_source_catalog_version";
+  if (get("SELECT value FROM app_state WHERE key=$key", { $key: markerKey })?.value === DEFAULT_RESEARCH_SOURCE_CATALOG_VERSION) return;
+  for (const [name, subreddit, note] of DEFAULT_REDDIT_SOURCES) {
+    seedSourceRecord({ name, type: "Reddit", locator: `r/${subreddit}`, status: "paused", note: `${note} Enable when you want Reddit included.`, config: { mode: "subreddit", subreddits: subreddit } });
+  }
+  for (const [name, query, note] of DEFAULT_X_SOURCES) {
+    seedSourceRecord({ name, type: "X", locator: `search:${query}`, status: "paused", note: `${note} Requires X API credentials.`, config: { mode: "search", query, quickMode: true, quickModeLocked: true } });
+  }
+  for (const [name, feedUrl, note] of DEFAULT_PODCAST_SOURCES) {
+    seedSourceRecord({ name, type: "Podcast", locator: feedUrl, status: "paused", note: `${note} Enable when local transcription is ready.`, config: { mode: "feed", feedUrl, transcribeNewEpisodes: false, maxItems: 5 } });
+  }
+  for (const [name, handle, channelId, note] of DEFAULT_YOUTUBE_SOURCES) {
+    const feedUrl = youtubeFeedUrl(channelId);
+    seedSourceRecord({ name, type: "YouTube", locator: handle, status: "paused", note: `${note} Enable when you want YouTube included.`, config: { mode: "channel", channel: handle, channelId, feedUrl, maxItems: 5 } });
+  }
+  setCatalogMarker(markerKey, DEFAULT_RESEARCH_SOURCE_CATALOG_VERSION);
+}
+
 function audit(action, entityType, entityId, note = "", diff = {}, actor = "operator") {
   run(`INSERT INTO audit_logs (id, ts, actor, action, entity_type, entity_id, note, diff_json)
        VALUES ($id, $ts, $actor, $action, $entityType, $entityId, $note, $diff)`, {
@@ -2686,6 +3282,9 @@ function seed() {
   }
   if (!get("SELECT provider FROM connector_credentials WHERE provider = 'elevenlabs'")) {
     run("INSERT INTO connector_credentials (provider, updated_at) VALUES ('elevenlabs', $t)", { $t: t });
+  }
+  if (!get("SELECT provider FROM connector_credentials WHERE provider = $provider", { $provider: REDDIT_PROVIDER })) {
+    run("INSERT INTO connector_credentials (provider, updated_at) VALUES ($provider, $t)", { $provider: REDDIT_PROVIDER, $t: t });
   }
   if (!get("SELECT provider FROM connector_credentials WHERE provider = $provider", { $provider: GOOGLE_CALENDAR_PROVIDER })) {
     run("INSERT INTO connector_credentials (provider, updated_at) VALUES ($provider, $t)", { $provider: GOOGLE_CALENDAR_PROVIDER, $t: t });
@@ -2751,6 +3350,82 @@ function seed() {
   if (googleCalendarRow?.enabled && googleCalendarData?.refreshToken) {
     ensureGoogleCalendarBriefSetup();
   }
+}
+
+function sqlStringLiteral(value) {
+  return `'${String(value).replace(/'/g, "''")}'`;
+}
+
+function createDatabaseBackup(targetDir = backupsDir) {
+  fs.mkdirSync(targetDir, { recursive: true });
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const fileName = `pillar-brief-backup-${stamp}.sqlite`;
+  const filePath = path.join(targetDir, fileName);
+  if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+  db.exec("PRAGMA wal_checkpoint(TRUNCATE);");
+  db.exec(`VACUUM INTO ${sqlStringLiteral(filePath)};`);
+  return { fileName, filePath, bytes: fs.statSync(filePath).size };
+}
+
+async function revealFileInSystem(filePath) {
+  if (process.platform === "darwin") {
+    await execFileAsync("open", ["-R", filePath]);
+    return true;
+  }
+  if (process.platform === "win32") {
+    await execFileAsync("explorer.exe", ["/select,", filePath]);
+    return true;
+  }
+  return false;
+}
+
+function clearDirectoryContents(dirPath) {
+  if (!fs.existsSync(dirPath)) return 0;
+  let removed = 0;
+  for (const entry of fs.readdirSync(dirPath, { withFileTypes: true })) {
+    fs.rmSync(path.join(dirPath, entry.name), { recursive: true, force: true });
+    removed += 1;
+  }
+  return removed;
+}
+
+function eraseAllUserData() {
+  const tables = [
+    "telegram_pairing_sessions",
+    "approval_items",
+    "workflow_runs",
+    "normalized_items",
+    "sources",
+    "document_chunks",
+    "knowledge_documents",
+    "council_members",
+    "councils",
+    "lenses",
+    "audit_logs",
+    "telegram_settings",
+    "model_settings",
+    "connector_credentials",
+    "tts_settings",
+    "brief_config",
+    "onboarding_state",
+    "app_state",
+  ];
+  db.exec("PRAGMA foreign_keys = OFF;");
+  db.exec("BEGIN;");
+  try {
+    for (const table of tables) db.exec(`DELETE FROM ${table};`);
+    db.exec("COMMIT;");
+  } catch (error) {
+    db.exec("ROLLBACK;");
+    throw error;
+  } finally {
+    db.exec("PRAGMA foreign_keys = ON;");
+  }
+  const removedAudioFiles = clearDirectoryContents(audioDir);
+  seed();
+  audit("data.erased", "runtime", "data", "All user data erased after explicit confirmation", { removedAudioFiles }, "operator");
+  db.exec("PRAGMA wal_checkpoint(TRUNCATE);");
+  return { removedAudioFiles };
 }
 
 function sources() {
@@ -2838,6 +3513,7 @@ function connectorSettings() {
   const rows = all("SELECT * FROM connector_credentials ORDER BY provider");
   const connectors = Object.fromEntries(rows.map((r) => {
     if (r.provider === GOOGLE_CALENDAR_PROVIDER) return [r.provider, googleCalendarPublicConnector({ row: r, data: parse(r.api_key, {}), enabled: !!r.enabled })];
+    if (r.provider === REDDIT_PROVIDER) return [r.provider, redditPublicConnector({ row: r, data: parse(r.api_key, {}), enabled: !!r.enabled })];
     const hasKey = !!r.api_key;
     return [r.provider, {
       provider: r.provider,
@@ -2871,6 +3547,7 @@ function connectorSettings() {
       lastError: null,
       updatedAt: null,
     },
+    reddit: connectors[REDDIT_PROVIDER] || redditPublicConnector({ row: null, data: {}, enabled: false }),
     googleCalendar: connectors[GOOGLE_CALENDAR_PROVIDER] || googleCalendarPublicConnector({ row: null, data: {}, enabled: false }),
   };
 }
@@ -3074,6 +3751,294 @@ function topNormalizedItems(limit = 7) {
   });
 }
 
+function cleanIssueText(value = "") {
+  return String(value || "")
+    .replace(/https?:\/\/\S+/gi, " ")
+    .replace(/\bRT\s+@[\w_]+:\s*/gi, " ")
+    .replace(/[@#][\w_]+/g, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/[^a-z0-9\s]/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+}
+
+function tokenSet(value = "") {
+  const stop = new Set(["the", "and", "for", "with", "that", "this", "from", "into", "over", "after", "before", "about", "says", "will", "are", "was", "were", "has", "have", "had", "new", "news", "latest", "breaking"]);
+  return new Set(cleanIssueText(value).split(/\s+/).filter((token) => token.length > 2 && !stop.has(token)).slice(0, 40));
+}
+
+function jaccardSimilarity(a = new Set(), b = new Set()) {
+  if (!a.size || !b.size) return 0;
+  let intersect = 0;
+  for (const token of a) if (b.has(token)) intersect += 1;
+  return intersect / (a.size + b.size - intersect);
+}
+
+function canonicalStoryUrl(url = "") {
+  try {
+    const parsed = new URL(String(url || ""));
+    parsed.hash = "";
+    parsed.search = "";
+    return `${parsed.hostname.replace(/^www\./, "")}${parsed.pathname.replace(/\/+$/, "")}`.toLowerCase();
+  } catch (_) {
+    return "";
+  }
+}
+
+function sectionTagsForItem(item = {}) {
+  const text = `${item.title || ""} ${item.body || ""} ${item.source_name || ""}`.toLowerCase();
+  const tags = new Set();
+  if (/\b(supreme court|congress|white house|senate|president|election|campaign|federal judge|administration|lawmakers?|policy|politics)\b/.test(text)) tags.add("politicalNational");
+  if (/\b(markets?|stocks?|equities|nasdaq|s&p|dow|federal reserve|rate cut|inflation|treasury|bonds?|oil|bitcoin|crypto|earnings|tariff|jobs report|unemployment|recession|gdp|bank)\b/.test(text)) tags.add("financialMarkets");
+  if (/\b(boulder|cu boulder|university of colorado boulder|boulder county|pearl street)\b/.test(text)) tags.add("boulderLocal");
+  if (/\b(colorado|denver|front range|aurora|fort collins|colorado springs|lakewood|longmont|lafayette|louisville|denverpost)\b/.test(text)) tags.add("coloradoRegional");
+  if (/\b(world|global|geopolitics|ukraine|russia|iran|israel|gaza|china|taiwan|nato|europe|war|ceasefire|sanctions?|foreign minister|prime minister)\b/.test(text)) tags.add("worldGeopolitics");
+  if (/\b(ai|artificial intelligence|openai|anthropic|google|microsoft|nvidia|chips?|semiconductor|software|developer|technology|cyber|data center|robotics)\b/.test(text)) tags.add("techAi");
+  if (/\b(science|study|research|health|medical|medicine|disease|cdc|who|nih|public health|climate|physics|biology|clinical|vaccine|nutrition)\b/.test(text)) tags.add("scienceHealth");
+  return [...tags];
+}
+
+function sectionFitScore(tags = []) {
+  const weights = {
+    politicalNational: 0.22,
+    financialMarkets: 0.22,
+    boulderLocal: 0.26,
+    coloradoRegional: 0.2,
+    worldGeopolitics: 0.2,
+    techAi: 0.18,
+    scienceHealth: 0.18,
+  };
+  return tags.reduce((sum, tag) => sum + (weights[tag] || 0.08), 0);
+}
+
+function sourceReliabilityWeight(item = {}) {
+  const name = String(item.source_name || "").toLowerCase();
+  const type = String(item.source_type || "").toLowerCase();
+  let score = 0.32;
+  if (["rss", "web", "youtube"].includes(type)) score += 0.16;
+  if (type === "x") score += 0.06;
+  if (type === "reddit") score -= 0.06;
+  if (/(associated press|reuters|bbc|pbs|npr|guardian|bloomberg|new york times|washington post|wall street journal|financial times|politico|the hill|cdc|who|nih|pnas|nature|science|lancet|jama|nejm|bmj|factcheck|politifact|snopes)/i.test(name)) score += 0.18;
+  if (/(youtube|podcast|clips)/i.test(name)) score -= 0.03;
+  return score;
+}
+
+function todayNewsRows() {
+  const dayStart = startOfLocalDay().toISOString();
+  const dayEnd = endOfLocalDay().toISOString();
+  return all(`SELECT ni.*, s.name AS source_name, s.type AS source_type
+              FROM normalized_items ni
+              LEFT JOIN sources s ON s.id = ni.source_id
+              WHERE ni.published_at >= $dayStart AND ni.published_at < $dayEnd
+                AND COALESCE(s.type, '') != 'Calendar'
+              ORDER BY ni.published_at DESC, ni.created_at DESC`, { $dayStart: dayStart, $dayEnd: dayEnd });
+}
+
+function candidateFromItem(item, reference = new Date()) {
+  const body = String(item.body || "");
+  const summary = body.length > 520 ? `${body.slice(0, 517)}...` : body;
+  const tags = sectionTagsForItem(item);
+  const titleTokens = tokenSet(item.title || "");
+  const snippetTokens = tokenSet(`${item.title || ""} ${summary}`);
+  const baseQuality = sourceItemQuality(item);
+  const titleScore = baseQuality + sourceReliabilityWeight(item) + sectionFitScore(tags) + Math.min(titleTokens.size, 10) * 0.012;
+  const snippetScore = titleScore + (summary.length > 180 ? 0.16 : summary.length > 60 ? 0.07 : -0.06) + Math.min(snippetTokens.size, 24) * 0.006;
+  return {
+    id: item.id,
+    title: item.title || "Untitled item",
+    sourceId: item.source_id,
+    sourceName: item.source_name || "Unknown source",
+    sourceType: item.source_type || "",
+    url: item.canonical_url || "",
+    canonicalUrlKey: canonicalStoryUrl(item.canonical_url || ""),
+    publishedAt: item.published_at,
+    summary,
+    sectionTags: tags,
+    titleScore,
+    snippetScore,
+    qualityScore: baseQuality,
+    titleTokens: [...titleTokens],
+    snippetTokens: [...snippetTokens],
+    cacheContext: timeContextForItem(item, reference),
+    raw: item,
+  };
+}
+
+function dedupeCalendarAgenda(agenda = []) {
+  const seen = new Set();
+  const deduped = [];
+  for (const event of Array.isArray(agenda) ? agenda : []) {
+    const key = [
+      String(event.summary || event.title || "").trim().toLowerCase(),
+      String(event.start || event.startTime || ""),
+      String(event.end || event.endTime || ""),
+      String(event.htmlLink || event.url || ""),
+    ].join("|");
+    if (seen.has(key)) continue;
+    seen.add(key);
+    deduped.push(event);
+  }
+  return deduped;
+}
+
+function coverageForResults(type, results = []) {
+  const rows = Array.isArray(results) ? results : [];
+  return {
+    type,
+    attempted: rows.length,
+    succeeded: rows.filter((result) => result.ok !== false && !result.skipped).length,
+    failed: rows.filter((result) => result.ok === false).length,
+    skipped: rows.filter((result) => result.skipped).length,
+    fetched: rows.reduce((sum, result) => sum + Number(result.seen || result.today || result.fetched || 0), 0),
+    today: rows.reduce((sum, result) => sum + Number(result.today || 0), 0),
+    inserted: rows.reduce((sum, result) => sum + Number(result.inserted || 0), 0),
+    reused: rows.reduce((sum, result) => sum + Number(result.reused || result.preflight || 0), 0),
+  };
+}
+
+function buildCoverageDiagnostics({ activeSources = [], sourceResults = {}, itemCount = 0, candidateCount = 0, calendarAgenda = [] } = {}) {
+  const groups = {
+    x: coverageForResults("X", sourceResults.xFetches),
+    rss: coverageForResults("RSS/YouTube", sourceResults.rssFetches),
+    reddit: coverageForResults("Reddit", sourceResults.redditFetches),
+    web: coverageForResults("Web", sourceResults.webFetches),
+    calendar: coverageForResults("Calendar", sourceResults.calendarFetches),
+    podcast: coverageForResults("Podcast", sourceResults.podcastTranscriptions),
+  };
+  const topFailures = [];
+  for (const [type, rows] of Object.entries({ x: sourceResults.xFetches || [], rss: sourceResults.rssFetches || [], reddit: sourceResults.redditFetches || [], web: sourceResults.webFetches || [], calendar: sourceResults.calendarFetches || [], podcast: sourceResults.podcastTranscriptions || [] })) {
+    for (const result of rows) {
+      if (result?.ok === false) topFailures.push({ type, source: result.sourceName || result.source || result.name || result.url || result.sourceId || "Unknown source", error: String(result.error || result.reason || "Unknown failure").slice(0, 260) });
+    }
+  }
+  const warnings = [];
+  if (groups.reddit.failed) warnings.push(`Reddit coverage degraded: ${groups.reddit.failed} source${groups.reddit.failed === 1 ? "" : "s"} failed.`);
+  if (groups.x.failed) warnings.push(`X coverage degraded: ${groups.x.failed} search${groups.x.failed === 1 ? "" : "es"} failed.`);
+  if (groups.rss.failed) warnings.push(`RSS/YouTube coverage degraded: ${groups.rss.failed} feed${groups.rss.failed === 1 ? "" : "s"} failed or blocked.`);
+  if (!candidateCount && itemCount) warnings.push("Sources fetched items, but no same-day non-calendar news candidates qualified for ranking.");
+  return { generatedAt: now(), activeSourceCount: activeSources.length, itemCount, candidateCount, calendarAgendaCount: calendarAgenda.length, byType: groups, topFailures: topFailures.slice(0, 18), warnings };
+}
+
+function clusterCandidates(candidates = []) {
+  const clusters = [];
+  for (const candidate of candidates) {
+    const tokens = new Set(candidate.snippetTokens || candidate.titleTokens || []);
+    let match = null;
+    for (const cluster of clusters) {
+      const sameUrl = candidate.canonicalUrlKey && cluster.urlKeys.has(candidate.canonicalUrlKey);
+      const similarity = jaccardSimilarity(tokens, cluster.tokens);
+      if (sameUrl || similarity >= 0.58) {
+        match = cluster;
+        break;
+      }
+    }
+    if (!match) {
+      match = { id: `cluster-${clusters.length + 1}`, lead: candidate, items: [], sources: new Set(), sourceTypes: new Set(), tags: new Set(candidate.sectionTags || []), tokens, urlKeys: new Set() };
+      clusters.push(match);
+    }
+    match.items.push(candidate);
+    match.sources.add(candidate.sourceName);
+    match.sourceTypes.add(candidate.sourceType);
+    (candidate.sectionTags || []).forEach((tag) => match.tags.add(tag));
+    if (candidate.canonicalUrlKey) match.urlKeys.add(candidate.canonicalUrlKey);
+    if (candidate.snippetScore > match.lead.snippetScore) match.lead = candidate;
+    match.tokens = new Set([...match.tokens, ...tokens].slice(0, 80));
+  }
+  return clusters.map((cluster, index) => {
+    const sourceCount = cluster.sources.size;
+    const corroboration = sourceCount > 1 ? Math.min(0.32, 0.12 * (sourceCount - 1)) : 0;
+    const score = cluster.lead.snippetScore + corroboration + Math.log(cluster.items.length + 1) * 0.08;
+    return {
+      id: `issue-${index + 1}`,
+      title: cluster.lead.title,
+      summary: cluster.lead.summary,
+      leadItemId: cluster.lead.id,
+      leadUrl: cluster.lead.url,
+      leadSource: cluster.lead.sourceName,
+      publishedAt: cluster.lead.publishedAt,
+      sectionTags: [...cluster.tags],
+      sourceNames: [...cluster.sources],
+      sourceTypes: [...cluster.sourceTypes],
+      itemIds: cluster.items.map((item) => item.id),
+      score,
+      items: cluster.items.map((item) => ({ id: item.id, sourceId: item.sourceId, title: item.title, sourceName: item.sourceName, sourceType: item.sourceType, url: item.url, publishedAt: item.publishedAt, summary: item.summary, sectionTags: item.sectionTags, relevanceScore: item.raw?.relevance_score, risingScore: item.raw?.rising_score, cacheContext: item.cacheContext })),
+    };
+  }).sort((a, b) => b.score - a.score);
+}
+
+function selectIssueClusters(clusters = [], min = 7, max = 12) {
+  const selected = [];
+  const selectedIds = new Set();
+  const addBestForTag = (tag, count = 1) => {
+    for (const cluster of clusters) {
+      if (selected.length >= max) return;
+      if (selectedIds.has(cluster.id) || !cluster.sectionTags.includes(tag)) continue;
+      selected.push(cluster);
+      selectedIds.add(cluster.id);
+      if (selected.filter((item) => item.sectionTags.includes(tag)).length >= count) return;
+    }
+  };
+  addBestForTag("politicalNational", 1);
+  addBestForTag("financialMarkets", 1);
+  addBestForTag("boulderLocal", 1);
+  addBestForTag("coloradoRegional", 1);
+  addBestForTag("worldGeopolitics", 1);
+  for (const cluster of clusters) {
+    if (selected.length >= Math.min(max, Math.max(min, clusters.length))) break;
+    if (selectedIds.has(cluster.id)) continue;
+    selected.push(cluster);
+    selectedIds.add(cluster.id);
+  }
+  return selected.sort((a, b) => b.score - a.score).slice(0, max);
+}
+
+function issueFromCluster(cluster, reference = new Date()) {
+  const lead = cluster.items.find((item) => item.id === cluster.leadItemId) || cluster.items[0] || {};
+  return {
+    id: lead.id,
+    clusterId: cluster.id,
+    title: cluster.title,
+    sourceId: lead.sourceId,
+    sourceName: lead.sourceName || cluster.leadSource || "Unknown source",
+    sourceType: lead.sourceType || "",
+    url: lead.url || cluster.leadUrl,
+    publishedAt: lead.publishedAt || cluster.publishedAt,
+    summary: cluster.summary,
+    whyJackShouldCare: specificIssueCare({ ...lead, sourceName: lead.sourceName || cluster.leadSource, summary: cluster.summary }),
+    futureImplication: specificFutureImplication({ ...lead, summary: cluster.summary }),
+    doctrineImpact: "Needs human review before it becomes a brief claim, public post, or doctrine update.",
+    relevanceScore: lead.relevanceScore,
+    risingScore: lead.risingScore,
+    qualityScore: cluster.score,
+    sectionTags: cluster.sectionTags,
+    corroboratingSources: cluster.sourceNames,
+    clusterItemCount: cluster.itemIds.length,
+    cacheContext: lead.cacheContext || timeContextForItem(lead.raw || lead, reference),
+  };
+}
+
+async function buildRigorousBriefInputs({ activeSources = [], sourceResults = {}, itemCount = 0 } = {}) {
+  const reference = new Date();
+  const calendarAgenda = dedupeCalendarAgenda(sourceResults.calendarAgenda || []);
+  const candidates = todayNewsRows()
+    .map((item) => candidateFromItem(item, reference))
+    .filter((candidate) => candidate.qualityScore > -0.25 && candidate.title);
+  const ranked = [...candidates].sort((a, b) => b.snippetScore - a.snippetScore || String(b.publishedAt).localeCompare(String(a.publishedAt)));
+  const clusters = clusterCandidates(ranked.slice(0, 60));
+  const selectedIssueClusters = selectIssueClusters(clusters, 7, 12);
+  const selectedIssues = selectedIssueClusters.map((cluster) => issueFromCluster(cluster, reference));
+  const candidateScan = {
+    generatedAt: now(),
+    totalCandidates: candidates.length,
+    clusterCount: clusters.length,
+    selectedClusterCount: selectedIssueClusters.length,
+    topCandidates: ranked.slice(0, 40).map((candidate) => ({ id: candidate.id, title: candidate.title, sourceName: candidate.sourceName, sourceType: candidate.sourceType, publishedAt: candidate.publishedAt, sectionTags: candidate.sectionTags, score: Number(candidate.snippetScore.toFixed(3)) })),
+  };
+  const coverageDiagnostics = buildCoverageDiagnostics({ activeSources, sourceResults, itemCount, candidateCount: candidates.length, calendarAgenda });
+  return { selectedIssues, selectedIssueClusters, candidateScan, coverageDiagnostics, calendarAgenda };
+}
+
 function markItemsUsedInBrief(items = []) {
   const t = now();
   for (const item of items) {
@@ -3092,6 +4057,14 @@ function deterministicStrategicBrief({ selectedIssues, lenses: lensRows, council
   const brief = {
     mode: "deterministic-fallback",
     headline: lead ? `Today’s strongest signal is ${lead.title}` : "No usable source items published today",
+    topIssues: selectedIssues.slice(0, 12).map((issue, index) => ({
+      rank: index + 1,
+      title: issue.title,
+      read: issue.summary || issue.whyJackShouldCare || "Monitor this as a source-backed signal from today.",
+      sources: issue.corroboratingSources || [issue.sourceName].filter(Boolean),
+      whyItMatters: issue.whyJackShouldCare || specificIssueCare(issue),
+    })),
+    coverageNotes: [],
     executiveRead: lead
       ? `The strongest item today is "${lead.title}" from ${lead.sourceName}.${leadSummary} Treat this as a monitored signal, not a settled conclusion: it needs corroboration from a primary source or another high-signal community before ${owner} should act on it.`
       : "The workflow ran, but did not ingest enough usable source material to produce an intelligence read.",
@@ -3207,10 +4180,10 @@ function validateStrategicBrief(brief) {
   return brief;
 }
 
-async function synthesizeStrategicBrief({ selectedIssues, sourceResults }) {
+async function synthesizeStrategicBrief({ selectedIssues, sourceResults, selectedIssueClusters = [], candidateScan = {}, coverageDiagnostics = {}, calendarAgenda: explicitCalendarAgenda }) {
   const config = briefConfig();
   const owner = config.ownerName || "the brief owner";
-  const calendarAgenda = Array.isArray(sourceResults?.calendarAgenda) ? sourceResults.calendarAgenda : [];
+  const calendarAgenda = Array.isArray(explicitCalendarAgenda) ? explicitCalendarAgenda : Array.isArray(sourceResults?.calendarAgenda) ? sourceResults.calendarAgenda : [];
   if (!selectedIssues.length && !calendarAgenda.length) throw new Error("No usable source items or calendar events from today were selected. Add or fix sources, then generate again.");
   const enabledAnalyzers = sanitizeAnalyzerList(config.analyzers, defaultAnalyzers()).filter((analyzer) => analyzer.enabled !== false);
   const enabledSections = (config.sections || []).filter((section) => section.enabled !== false).map((section) => {
@@ -3246,6 +4219,8 @@ async function synthesizeStrategicBrief({ selectedIssues, sourceResults }) {
       mode: "model",
       headline: "one sentence",
       titleSummary: "8-16 words for the saved title after the date; concrete main points only, no date",
+      topIssues: [{ rank: 1, title: "issue title", read: "what happened and why it matters", sources: ["source names"], whyItMatters: "practical implication" }],
+      coverageNotes: ["short notes about source/API gaps, blocked feeds, calendar-only runs, or thin coverage"],
       sectionResponses: Object.fromEntries(enabledSections
         .filter((section) => section.key !== "sourceEvidence")
         .map((section) => [section.key, `${section.label}: answer this section using its instruction, today's selected source items, and calendarAgenda when relevant`])),
@@ -3274,6 +4249,13 @@ async function synthesizeStrategicBrief({ selectedIssues, sourceResults }) {
       analyzerBehavior: config.analyzerBehavior || defaultAnalyzerBehavior,
     },
     selectedIssues,
+    selectedIssueClusters: selectedIssueClusters.slice(0, 12),
+    candidateScan: {
+      totalCandidates: candidateScan.totalCandidates || 0,
+      clusterCount: candidateScan.clusterCount || 0,
+      selectedClusterCount: candidateScan.selectedClusterCount || selectedIssueClusters.length,
+    },
+    coverageDiagnostics,
     calendarAgenda,
     sourceFreshnessPolicy: "Selected source items have publishedAt dates from today only. If no selectedIssues are present, say there were no usable items published today.",
     sourceResults,
@@ -3337,6 +4319,22 @@ function renderOnePageBrief(artifact = {}) {
     `# ${artifact.title || brief.headline || "Daily Brief"}`,
     `Generated: ${artifact.generatedAt ? new Date(artifact.generatedAt).toLocaleString() : new Date().toLocaleString()}`,
   ];
+  if (Array.isArray(brief.topIssues) && brief.topIssues.length) {
+    lines.push("", "## Top Issues");
+    brief.topIssues.slice(0, 12).forEach((issue, index) => {
+      lines.push(`${issue.rank || index + 1}. ${issue.title || "Untitled issue"}`);
+      if (issue.read) lines.push(`   ${issue.read}`);
+      if (issue.whyItMatters) lines.push(`   Why it matters: ${issue.whyItMatters}`);
+      if (Array.isArray(issue.sources) && issue.sources.length) lines.push(`   Sources: ${issue.sources.slice(0, 4).join(", ")}`);
+    });
+  }
+  const coverageNotes = Array.isArray(brief.coverageNotes) && brief.coverageNotes.length
+    ? brief.coverageNotes
+    : Array.isArray(artifact.coverageDiagnostics?.warnings) ? artifact.coverageDiagnostics.warnings : [];
+  if (coverageNotes.length) {
+    lines.push("", "## Coverage Notes");
+    coverageNotes.forEach((note) => lines.push(`- ${note}`));
+  }
   const bullets = (items) => Array.isArray(items) && items.length ? items.forEach((item) => lines.push(`- ${typeof item === "string" ? item : JSON.stringify(item)}`)) : lines.push("- No read generated.");
   const renderContent = (content) => {
     if (Array.isArray(content)) {
@@ -3646,11 +4644,12 @@ async function executeWorkflow(trigger = "Manual", options = {}) {
     finishProgress("retrieve", `${docs.length} active document${docs.length === 1 ? "" : "s"} available`);
     writeProgress("select");
     await progressDelay();
-    const selectedIssues = topNormalizedItems();
-    finishProgress("select", `${selectedIssues.length} top issue${selectedIssues.length === 1 ? "" : "s"} selected`);
+    const rigorousInputs = await buildRigorousBriefInputs({ activeSources, sourceResults, itemCount });
+    const { selectedIssues, selectedIssueClusters, candidateScan, coverageDiagnostics, calendarAgenda } = rigorousInputs;
+    finishProgress("select", `${selectedIssues.length} issue cluster${selectedIssues.length === 1 ? "" : "s"} selected`);
     writeProgress("synthesize");
     await progressDelay();
-    const strategicBrief = await synthesizeStrategicBrief({ selectedIssues, sourceResults });
+    const strategicBrief = await synthesizeStrategicBrief({ selectedIssues, sourceResults, selectedIssueClusters, candidateScan, coverageDiagnostics, calendarAgenda });
     finishProgress("synthesize", "Strategic synthesis generated");
     audit("brief.synthesized", "workflow_run", runId, `Strategic brief synthesized with ${strategicBrief.mode || "model"}`, { selectedIssues: selectedIssues.length }, "system");
     writeProgress("render");
@@ -3660,13 +4659,16 @@ async function executeWorkflow(trigger = "Manual", options = {}) {
     title: briefArtifactTitle({ generatedAt, strategicBrief, selectedIssues }),
     generatedAt,
     selectedIssues,
+    selectedIssueClusters,
+    candidateScan,
+    coverageDiagnostics,
     podcastTranscriptions: transcriptionResults,
     xFetches: xResults,
     rssFetches: rssResults,
     redditFetches: redditResults,
     webFetches: webResults,
     calendarFetches: calendarResults,
-    calendarAgenda: sourceResults.calendarAgenda || [],
+    calendarAgenda,
     strategicBrief,
     whyJackShouldCare: Array.isArray(strategicBrief.whyJackShouldCare) ? strategicBrief.whyJackShouldCare.join("\n") : strategicBrief.whyJackShouldCare || "",
     implications: strategicBrief.futureImplications || [],
@@ -3803,6 +4805,71 @@ app.get("/api/state", async (req, res) => {
   res.json(state());
 });
 
+app.get("/api/data/backup", (req, res) => {
+  try {
+    const backup = createDatabaseBackup();
+    audit("data.backup_created", "runtime", "data", "Database backup downloaded", { bytes: backup.bytes, fileName: backup.fileName }, "operator");
+    res.download(backup.filePath, backup.fileName);
+  } catch (error) {
+    res.status(500).json({ error: error.message || "Could not create backup.", state: state() });
+  }
+});
+
+app.post("/api/data/backup/save", async (req, res) => {
+  try {
+    const downloadsDir = path.join(os.homedir(), "Downloads");
+    const backup = createDatabaseBackup(downloadsDir);
+    let revealed = false;
+    if (isDesktop) {
+      revealed = await revealFileInSystem(backup.filePath).catch(() => false);
+    }
+    audit("data.backup_saved", "runtime", "data", "Database backup saved to Downloads", { bytes: backup.bytes, fileName: backup.fileName, filePath: backup.filePath, revealed }, "operator");
+    res.json({ ok: true, backup: { fileName: backup.fileName, filePath: backup.filePath, bytes: backup.bytes, revealed }, state: state() });
+  } catch (error) {
+    res.status(500).json({ error: error.message || "Could not save backup.", state: state() });
+  }
+});
+
+app.post("/api/data/erase", (req, res) => {
+  const confirmation = String(req.body?.confirmation || "").trim();
+  if (confirmation !== "ERASE ALL DATA") {
+    return res.status(400).json({ error: "Type ERASE ALL DATA to confirm.", state: state() });
+  }
+  try {
+    const result = eraseAllUserData();
+    res.json({ ok: true, result, state: state() });
+  } catch (error) {
+    res.status(500).json({ error: error.message || "Could not erase data.", state: state() });
+  }
+});
+
+app.get("/api/source-library", (req, res) => {
+  res.json({ sources: catalogSourceSuggestions(), state: state() });
+});
+
+app.get("/api/crypto/coingecko/search", async (req, res) => {
+  const query = String(req.query.q || "").trim();
+  if (query.length < 2) return res.json({ coins: [], state: state() });
+  try {
+    const response = await fetchWithTimeout(`https://api.coingecko.com/api/v3/search?query=${encodeURIComponent(query)}`, {
+      headers: { accept: "application/json", "User-Agent": "PillarBrief/0.1" },
+    }, 12000);
+    if (!response.ok) throw new Error(`CoinGecko search failed: ${response.status} ${response.statusText}`);
+    const payload = await response.json();
+    const coins = (payload.coins || []).slice(0, 12).map((coin) => ({
+      id: String(coin.id || ""),
+      name: String(coin.name || coin.id || ""),
+      symbol: String(coin.symbol || "").toUpperCase(),
+      marketCapRank: coin.market_cap_rank || null,
+      thumb: coin.thumb || "",
+      large: coin.large || "",
+    })).filter((coin) => coin.id);
+    res.json({ coins, state: state() });
+  } catch (error) {
+    res.status(400).json({ error: error.message || "Could not search CoinGecko.", state: state() });
+  }
+});
+
 app.get("/api/notifications/latest-brief", (req, res) => {
   const row = get(`SELECT id, completed_at, artifact_json FROM workflow_runs
                    WHERE status='completed' AND trigger LIKE 'Scheduled%'
@@ -3913,7 +4980,7 @@ app.post("/api/runtime/ffmpeg/install", async (req, res) => {
 
 app.post("/api/runtime/open-url", async (req, res) => {
   const url = String(req.body?.url || "").trim();
-  if (!/^https:\/\/(core\.telegram\.org|telegram\.org|t\.me|brew\.sh|formulae\.brew\.sh|ffmpeg\.org|platform\.openai\.com|help\.openai\.com|console\.anthropic\.com|docs\.anthropic\.com|openrouter\.ai|accounts\.google\.com|aistudio\.google\.com|ai\.google\.dev|developer\.x\.com|docs\.x\.com|console\.x\.ai|docs\.x\.ai|elevenlabs\.io)(\/|$)/i.test(url)) {
+  if (!/^https:\/\/(core\.telegram\.org|telegram\.org|t\.me|brew\.sh|formulae\.brew\.sh|ffmpeg\.org|platform\.openai\.com|help\.openai\.com|console\.anthropic\.com|docs\.anthropic\.com|openrouter\.ai|accounts\.google\.com|auth\.pillar\.transformationagency\.com|pillar-brief-auth\.vercel\.app|aistudio\.google\.com|ai\.google\.dev|developer\.x\.com|docs\.x\.com|console\.x\.ai|docs\.x\.ai|elevenlabs\.io)(\/|$)/i.test(url)) {
     return res.status(400).json({ error: "That external URL is not allowed.", state: state() });
   }
   if (isDesktop && process.platform === "darwin") {
@@ -4031,7 +5098,11 @@ app.post("/api/onboarding/source-suggestions", async (req, res) => {
     const text = await callTextModel({ system, prompt });
     const payload = parseModelJson(text);
     const keepYears = promptHasExplicitYearIntent(briefPrompt);
-    const suggestions = (Array.isArray(payload.sources) ? payload.sources : []).slice(0, 8).map((source, index) => sanitizeSourceSuggestion(source, index, { keepYears })).filter((source) => source.locator);
+    const personalized = (Array.isArray(payload.sources) ? payload.sources : [])
+      .slice(0, 8)
+      .map((source, index) => sanitizeSourceSuggestion({ ...source, selectedByDefault: true, catalog: "Personalized" }, index, { keepYears }))
+      .filter((source) => source.locator);
+    const suggestions = mergeSourceSuggestions(personalized, catalogSourceSuggestions());
     if (!suggestions.length) throw new Error("The model did not return usable source suggestions. Try adding more specific topics or source names.");
     run(`UPDATE onboarding_state
          SET brief_prompt=$briefPrompt, source_suggestions_json=$suggestions, current_step='sources', updated_at=$t
@@ -4174,14 +5245,30 @@ app.post("/api/sources", (req, res) => {
   const body = req.body || {};
   const sourceType = String(body.type || "Web");
   const config = sanitizeSourceConfig(sourceType, body.config || {}, body.locator || "", { keepYears: body.keepYears === true || body.config?.keepYears === true });
-  const locator = sourceType === "X" ? `search:${config.query || ""}` : String(body.locator || "").trim();
+  const locator = sourceType === "X" ? `search:${config.query || ""}` : sourceType === "Crypto" ? `coingecko:${(config.coins || []).map((coin) => coin.id).filter(Boolean).join(",")}` : String(body.locator || "").trim();
   const t = now();
   const source = {
     id: id("src"), name: String(body.name || body.locator || "Untitled source").trim(),
     type: sourceType, locator,
     cadence: String(body.cadence || "Daily"), status: "active",
-    approval_status: "approved", credentials_status: body.credentialsStatus || sourceCredentialStatus(String(body.type || "Web")), note: body.note || "",
+    approval_status: "approved", credentials_status: body.credentialsStatus || sourceCredentialStatus(String(body.type || "Web")), note: body.note || body.rationale || "",
   };
+  const existing = get("SELECT * FROM sources WHERE type=$type AND (name=$name OR locator=$locator) ORDER BY created_at ASC LIMIT 1", { $type: source.type, $name: source.name, $locator: source.locator });
+  if (existing) {
+    run(`UPDATE sources SET name=$name, locator=$locator, cadence=$cadence, status='active', approval_status='approved',
+         credentials_status=$credentials, note=$note, config_json=$config, updated_at=$t WHERE id=$id`, {
+      $id: existing.id,
+      $name: source.name,
+      $locator: source.locator,
+      $cadence: source.cadence,
+      $credentials: source.credentials_status,
+      $note: source.note || existing.note || "",
+      $config: json(config),
+      $t: t,
+    });
+    audit("source.activated", "source", existing.id, source.name);
+    return res.json(state());
+  }
   run(`INSERT INTO sources (id, name, type, locator, cadence, status, approval_status, credentials_status, note, config_json, created_at, updated_at)
        VALUES ($id, $name, $type, $locator, $cadence, $status, $approval, $credentials, $note, $config, $t, $t)`, {
     $id: source.id, $name: source.name, $type: source.type, $locator: source.locator, $cadence: source.cadence,
@@ -4226,7 +5313,7 @@ app.patch("/api/sources/:id", (req, res) => {
   const body = req.body || {};
   const nextType = String(body.type || existing.type || "Web");
   const nextConfig = body.config ? sanitizeSourceConfig(nextType, body.config, body.locator || existing.locator, { keepYears: body.keepYears === true || body.config?.keepYears === true }) : parse(existing.config_json, {});
-  const nextLocator = nextType === "X" ? `search:${nextConfig.query || ""}` : body.locator;
+  const nextLocator = nextType === "X" ? `search:${nextConfig.query || ""}` : nextType === "Crypto" ? `coingecko:${(nextConfig.coins || []).map((coin) => coin.id).filter(Boolean).join(",")}` : body.locator;
   const next = { ...existing, ...Object.fromEntries(Object.entries({
     name: body.name, type: body.type, locator: nextLocator, cadence: body.cadence, status: body.status,
     approval_status: body.approvalStatus, credentials_status: body.credentialsStatus, note: body.note,
@@ -4758,6 +5845,11 @@ app.patch("/api/google-calendar/calendars", (req, res) => {
   if (!selectedCalendarIds.length) return res.status(400).json({ error: "Choose at least one calendar.", state: state() });
   const nextData = { ...credential.data, selectedCalendarIds, calendarId: "selected" };
   saveGoogleCalendarCredential(nextData, { enabled: true });
+  for (const source of sources().filter((item) => item.type === "Calendar" && (item.locator === "selected" || item.config?.calendarId === "selected"))) {
+    const { calendarIds: _staleCalendarIds, ...configWithoutStaleCalendarIds } = source.config || {};
+    const nextConfig = { ...configWithoutStaleCalendarIds, calendarId: "selected", lastFetchedCalendarIds: selectedCalendarIds };
+    run("UPDATE sources SET config_json=$config, updated_at=$t WHERE id=$id", { $id: source.id, $config: json(nextConfig), $t: now() });
+  }
   audit("google_calendar.calendars_updated", "connector", GOOGLE_CALENDAR_PROVIDER, `Selected ${selectedCalendarIds.length} calendar${selectedCalendarIds.length === 1 ? "" : "s"}`, {}, "system");
   res.json(state());
 });
@@ -4770,9 +5862,27 @@ app.post("/api/google-calendar/disconnect", (req, res) => {
 
 app.patch("/api/connectors/:provider", (req, res) => {
   const provider = String(req.params.provider || "").toLowerCase();
-  if (!["x", "elevenlabs"].includes(provider)) return res.status(404).json({ error: "Connector not found" });
+  if (!["x", "elevenlabs", REDDIT_PROVIDER].includes(provider)) return res.status(404).json({ error: "Connector not found" });
   const b = req.body || {};
   const current = get("SELECT * FROM connector_credentials WHERE provider=$provider", { $provider: provider }) || {};
+  if (provider === REDDIT_PROVIDER) {
+    const currentData = parse(current.api_key, {});
+    const nextData = {
+      ...currentData,
+      clientId: String(b.clientId || currentData.clientId || "").trim(),
+      clientSecret: String(b.clientSecret === undefined ? currentData.clientSecret || "" : b.clientSecret || "").trim(),
+      grantType: b.grantType === "installed_client" ? "installed_client" : "client_credentials",
+      deviceId: String(b.deviceId || currentData.deviceId || "DO_NOT_TRACK_THIS_DEVICE").trim() || "DO_NOT_TRACK_THIS_DEVICE",
+    };
+    if (b.clientId || b.clientSecret !== undefined || b.grantType || b.deviceId) {
+      nextData.accessToken = "";
+      nextData.expiresAt = 0;
+    }
+    const missing = b.enabled && !nextData.clientId;
+    saveRedditCredential(nextData, { enabled: b.enabled ? true : false, error: missing ? "Missing Reddit client ID" : "" });
+    audit("connector.settings_updated", "connector", provider, b.enabled ? "Reddit connector enabled/updated" : "Reddit connector disabled/updated");
+    return res.json(state());
+  }
   const apiKey = b.apiKey ? b.apiKey : current.api_key || "";
   const missing = b.enabled && !apiKey;
   run(`INSERT INTO connector_credentials (provider, api_key, enabled, last_error, updated_at)
@@ -4786,6 +5896,31 @@ app.patch("/api/connectors/:provider", (req, res) => {
   });
   audit("connector.settings_updated", "connector", provider, b.enabled ? `${provider} connector enabled/updated` : `${provider} connector disabled/updated`);
   res.json(state());
+});
+
+app.post("/api/reddit/test", async (req, res) => {
+  try {
+    if (req.body?.clientId || req.body?.clientSecret !== undefined || req.body?.grantType || req.body?.deviceId) {
+      const current = redditCredential().data;
+      saveRedditCredential({
+        ...current,
+        clientId: String(req.body.clientId || current.clientId || "").trim(),
+        clientSecret: String(req.body.clientSecret === undefined ? current.clientSecret || "" : req.body.clientSecret || "").trim(),
+        grantType: req.body.grantType === "installed_client" ? "installed_client" : "client_credentials",
+        deviceId: String(req.body.deviceId || current.deviceId || "DO_NOT_TRACK_THIS_DEVICE").trim() || "DO_NOT_TRACK_THIS_DEVICE",
+        accessToken: "",
+        expiresAt: 0,
+      }, { enabled: true });
+    }
+    await refreshRedditAccessToken({ force: true });
+    const payload = await fetchRedditOAuthJson("/r/news/hot.json?limit=1&raw_json=1");
+    const count = payload?.data?.children?.length || 0;
+    run("UPDATE connector_credentials SET last_checked_at=$t, last_error='', updated_at=$t WHERE provider=$provider", { $provider: REDDIT_PROVIDER, $t: now() });
+    res.json({ ok: true, fetched: count, connector: redditPublicConnector({ row: get("SELECT * FROM connector_credentials WHERE provider=$provider", { $provider: REDDIT_PROVIDER }), data: redditCredential().data, enabled: true }), state: state() });
+  } catch (error) {
+    run("UPDATE connector_credentials SET last_checked_at=$t, last_error=$err, updated_at=$t WHERE provider=$provider", { $provider: REDDIT_PROVIDER, $t: now(), $err: error.message || "Reddit test failed" });
+    res.status(400).json({ error: error.message || "Reddit test failed", state: state() });
+  }
 });
 
 app.post("/api/tts/voices", async (req, res) => {

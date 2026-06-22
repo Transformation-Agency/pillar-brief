@@ -16,3 +16,4 @@ src-tauri/binaries/pillar-brief-backend-*
 src-tauri/binaries/whisper-cli-*
 .DS_Store
 out/
+.vercel
