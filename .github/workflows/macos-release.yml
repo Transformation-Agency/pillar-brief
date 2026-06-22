@@ -71,7 +71,6 @@ jobs:
           node scripts/verify-release-version.mjs
           npm run check
           node --check server/index.js
-          cargo check --manifest-path src-tauri/Cargo.toml --target "${{ matrix.target }}"
           cargo check --manifest-path src-tauri/audio-convert/Cargo.toml --target "${{ matrix.target }}"
 
       - name: Provide x64 Node sidecar

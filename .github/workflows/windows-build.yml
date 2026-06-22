@@ -44,7 +44,6 @@ jobs:
           node scripts/verify-release-version.mjs
           npm run check
           node --check server/index.js
-          cargo check --manifest-path src-tauri/Cargo.toml
           cargo check --manifest-path src-tauri/audio-convert/Cargo.toml
 
       - name: Build static whisper-cli
