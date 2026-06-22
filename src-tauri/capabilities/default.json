@@ -4,7 +4,7 @@
   "description": "Allows the main Pillar Brief desktop webview to check, install, and restart into signed app updates.",
   "windows": ["main"],
   "remote": {
-    "urls": ["http://127.0.0.1:*", "http://localhost:*"]
+    "urls": ["http://127.0.0.1:42817", "http://localhost:42817"]
   },
-  "permissions": ["core:default", "updater:default", "process:allow-restart"]
+  "permissions": ["core:default", "core:app:allow-version", "updater:default", "process:allow-restart"]
 }

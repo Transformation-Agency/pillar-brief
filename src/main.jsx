@@ -516,15 +516,19 @@ function useDesktopUpdates() {
       message: silent ? current.message : "Checking for updates...",
       progress: "",
     }));
+    let version = "";
     try {
-      const [version, update] = await Promise.all([
-        desktopRuntime.appVersion(),
-        desktopRuntime.checkForUpdates(),
-      ]);
+      version = await desktopRuntime.appVersion();
+      setUpdateState((current) => ({ ...current, isDesktop: true, version }));
+    } catch {
+      version = "";
+    }
+    try {
+      const update = await desktopRuntime.checkForUpdates();
       setUpdateState((current) => ({
         ...current,
         isDesktop: true,
-        version,
+        version: version || current.version,
         status: update ? "available" : "current",
         update,
         message: update ? `Version ${update.version} is ready to install.` : "Pillar Brief is up to date.",
@@ -532,11 +536,13 @@ function useDesktopUpdates() {
       }));
       return update;
     } catch (error) {
+      const message = error?.message || String(error || "Update check failed");
       setUpdateState((current) => ({
         ...current,
         isDesktop: true,
         status: silent ? "idle" : "error",
-        message: silent ? current.message : error.message,
+        version: version || current.version,
+        message: silent ? current.message : `Update check failed: ${message}`,
         progress: "",
       }));
       return null;
@@ -3395,6 +3401,8 @@ function Settings({ state, mutate, refresh, desktopUpdate }) {
         ? "Restart required"
         : desktopUpdate?.status === "current"
           ? "Up to date"
+          : desktopUpdate?.status === "error"
+            ? "Update failed"
           : "Desktop only";
   return <Page
     title="Settings"

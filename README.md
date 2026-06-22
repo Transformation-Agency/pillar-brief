@@ -15,13 +15,13 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/Transformation-Agency/pillar-brief/releases/download/v0.1.4/Pillar.Brief_0.1.4_aarch64.dmg">
+  <a href="https://github.com/Transformation-Agency/pillar-brief/releases/download/v0.1.5/Pillar.Brief_0.1.5_aarch64.dmg">
     <img src="https://img.shields.io/badge/Download-M--series%20Macs-black?style=for-the-badge&logo=apple" alt="Download for M-series Macs" />
   </a>
-  <a href="https://github.com/Transformation-Agency/pillar-brief/releases/download/v0.1.4/Pillar.Brief_0.1.4_x64.dmg">
+  <a href="https://github.com/Transformation-Agency/pillar-brief/releases/download/v0.1.5/Pillar.Brief_0.1.5_x64.dmg">
     <img src="https://img.shields.io/badge/Download-Intel%20Macs-333333?style=for-the-badge&logo=apple" alt="Download for Intel Macs" />
   </a>
-  <a href="https://github.com/Transformation-Agency/pillar-brief/releases/download/v0.1.4/Pillar.Brief_0.1.4_x64-setup.exe">
+  <a href="https://github.com/Transformation-Agency/pillar-brief/releases/download/v0.1.5/Pillar.Brief_0.1.5_x64-setup.exe">
     <img src="https://img.shields.io/badge/Download-Windows-0078D4?style=for-the-badge" alt="Download for Windows" />
   </a>
 </p>
@@ -40,13 +40,13 @@
 
 ## Latest Release
 
-**v0.1.4** adds a cleaner starter setup, crypto market snapshots, and safer data controls:
+**v0.1.5** fixes signed desktop update checks:
 
-- Recommended source library with review, select-all, and prerequisite callouts before sources run.
-- CoinGecko crypto price sources with searchable asset selection.
-- Backup and erase-all-data controls in Settings, including desktop backup saves to Downloads.
-- Google Calendar source fixes so selected calendars stay selected and agenda items appear first in Brief Setup.
-- Source onboarding polish for optional integrations and setup-dependent sources.
+- Restores app version detection in the desktop Settings update panel.
+- Fixes signed update checks from the local desktop webview.
+- Shows explicit updater errors instead of a generic failed state.
+- Keeps updater installation/restart actions available for future releases.
+- Users on v0.1.4 may need to install v0.1.5 manually once; future updates should work in-app.
 
 See all versions on the
 [GitHub releases page](https://github.com/Transformation-Agency/pillar-brief/releases).
