@@ -1,0 +1,9 @@
+{
+  "name": "@pillar-brief/auth-broker",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "check": "node --check api/google/start.js && node --check api/google/callback.js && node --check api/google/refresh.js"
+  }
+}

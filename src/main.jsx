@@ -40,6 +40,9 @@ import {
   Upload,
   Users,
   Volume2,
+  FastForward,
+  Rewind,
+  Pause,
   X as XIcon,
 } from "lucide-react";
 import "./styles.css";
@@ -334,6 +337,9 @@ function Icon({ name }) {
     copy: Copy,
     download: Download,
     volume: Volume2,
+    pause: Pause,
+    rewind: Rewind,
+    forward: FastForward,
     pencil: Pencil,
     trash: Trash2,
     templates: LayoutTemplate,
@@ -401,12 +407,30 @@ async function api(path, options) {
 }
 
 async function openExternalUrl(url) {
+  const openFallback = () => {
+    const openedWindow = window.open(url, "_blank", "noopener,noreferrer");
+    if (!openedWindow) throw new Error("Could not open your browser. Copy the link and open it manually.");
+    return { opened: true, url };
+  };
   try {
     const result = await api("/api/runtime/open-url", { method: "POST", body: JSON.stringify({ url }) });
-    if (!result.opened) window.open(result.url || url, "_blank", "noopener,noreferrer");
+    if (!result.opened) return openFallback();
+    return result;
   } catch {
-    window.open(url, "_blank", "noopener,noreferrer");
+    return openFallback();
   }
+}
+
+function formatAudioTime(seconds) {
+  if (!Number.isFinite(seconds) || seconds <= 0) return "0:00";
+  const total = Math.max(0, Math.floor(seconds));
+  const minutes = Math.floor(total / 60);
+  const remainder = String(total % 60).padStart(2, "0");
+  return `${minutes}:${remainder}`;
+}
+
+async function copyText(text) {
+  await navigator.clipboard.writeText(text);
 }
 
 function useConsoleState() {
@@ -1297,6 +1321,8 @@ function Briefs({ state, runWorkflow, refresh }) {
   const [audioMessage, setAudioMessage] = React.useState("");
   const [audioUrl, setAudioUrl] = React.useState("");
   const [audioPlaying, setAudioPlaying] = React.useState(false);
+  const [audioCurrentTime, setAudioCurrentTime] = React.useState(0);
+  const [audioDuration, setAudioDuration] = React.useState(0);
   const [deliberationBusy, setDeliberationBusy] = React.useState(false);
   const [deliberationMessage, setDeliberationMessage] = React.useState("");
   const audioRef = React.useRef(null);
@@ -1305,25 +1331,59 @@ function Briefs({ state, runWorkflow, refresh }) {
   }, [state.workflowRuns, selectedId]);
   const filtered = state.workflowRuns.filter((run) => briefDisplayTitle(run).toLowerCase().includes(query.toLowerCase()));
   const selected = state.workflowRuns.find((run) => run.id === selectedId) || filtered[0] || state.workflowRuns[0];
+  const selectedAudioDuration = Number(selected?.artifact?.audio?.duration || selected?.artifact?.audio?.durationSeconds || 0);
+  const displayedAudioDuration = Math.max(
+    Number.isFinite(audioDuration) ? audioDuration : 0,
+    Number.isFinite(selectedAudioDuration) ? selectedAudioDuration : 0,
+  );
+  const audioTimelineMax = Math.max(1, Math.ceil(displayedAudioDuration || audioCurrentTime || 1));
   React.useEffect(() => {
     audioRef.current?.pause();
     audioRef.current = null;
     setAudioUrl(selected?.artifact?.audio?.url || "");
     setAudioMessage("");
     setAudioPlaying(false);
+    setAudioCurrentTime(0);
+    setAudioDuration(Number.isFinite(selectedAudioDuration) ? selectedAudioDuration : 0);
     setDeliberationMessage("");
-  }, [selected?.id, selected?.artifact?.audio?.url]);
+  }, [selected?.id, selected?.artifact?.audio?.url, selectedAudioDuration]);
   React.useEffect(() => () => audioRef.current?.pause(), []);
-  const playAudioUrl = async (url) => {
+  const updateAudioDuration = (audio) => {
+    if (!audio) return;
+    const nextDuration = Number(audio.duration);
+    if (Number.isFinite(nextDuration) && nextDuration > 0) setAudioDuration(nextDuration);
+  };
+  const ensureAudioElement = (url) => {
     if (!audioRef.current || audioRef.current.src !== new URL(url, window.location.href).href) {
       audioRef.current?.pause();
       const audio = new Audio(url);
+      audio.preload = "auto";
       audio.addEventListener("ended", () => setAudioPlaying(false));
       audio.addEventListener("pause", () => setAudioPlaying(false));
       audio.addEventListener("play", () => setAudioPlaying(true));
+      audio.addEventListener("timeupdate", () => {
+        setAudioCurrentTime(audio.currentTime || 0);
+        updateAudioDuration(audio);
+      });
+      audio.addEventListener("loadedmetadata", () => updateAudioDuration(audio));
+      audio.addEventListener("canplay", () => updateAudioDuration(audio));
+      audio.addEventListener("durationchange", () => updateAudioDuration(audio));
       audioRef.current = audio;
+      audio.load();
     }
-    await audioRef.current.play();
+    return audioRef.current;
+  };
+  React.useEffect(() => {
+    if (!audioUrl) return;
+    try {
+      const audio = ensureAudioElement(audioUrl);
+      audio.load();
+    } catch {
+      // Playback errors are surfaced when the user presses Play.
+    }
+  }, [audioUrl]);
+  const playAudioUrl = async (url) => {
+    await ensureAudioElement(url).play();
   };
   const playBriefAudio = async () => {
     if (!selected) return;
@@ -1353,6 +1413,27 @@ function Briefs({ state, runWorkflow, refresh }) {
     if (!audioUrl) return;
     if (audioRef.current) audioRef.current.currentTime = 0;
     playAudioUrl(audioUrl).catch((error) => setAudioMessage(error.message || "Could not restart audio."));
+  };
+  const seekBriefAudio = (seconds) => {
+    if (!Number.isFinite(seconds)) return;
+    const audio = audioRef.current || (audioUrl ? ensureAudioElement(audioUrl) : null);
+    if (!audio) return;
+    const applySeek = () => {
+      const duration = Number.isFinite(audio.duration) && audio.duration > 0 ? audio.duration : displayedAudioDuration;
+      const nextTime = Math.max(0, duration ? Math.min(seconds, duration) : seconds);
+      audio.currentTime = nextTime;
+      setAudioCurrentTime(nextTime);
+    };
+    if (audio.readyState === 0) audio.addEventListener("loadedmetadata", applySeek, { once: true });
+    else applySeek();
+  };
+  const nudgeBriefAudio = (delta) => {
+    if (!audioUrl) return;
+    if (!audioRef.current) {
+      playAudioUrl(audioUrl).then(() => seekBriefAudio(delta > 0 ? delta : 0)).catch((error) => setAudioMessage(error.message || "Could not play audio."));
+      return;
+    }
+    seekBriefAudio((audioRef.current.currentTime || 0) + delta);
   };
   const deliberateBrief = async (regenerate = false) => {
     if (!selected) return;
@@ -1392,11 +1473,31 @@ function Briefs({ state, runWorkflow, refresh }) {
       <section className="panel brief-reader">
         {selected ? selected.status === "running" ? <BriefGenerationProgress run={selected} /> : <>
           <div className="brief-reader-actions">
-            <Button icon="volume" onClick={playBriefAudio} disabled={audioBusy || state.tts?.status !== "ready"}>{audioBusy ? "Generating..." : audioPlaying ? "Pause" : audioUrl ? "Play audio" : "Generate audio"}</Button>
-            {audioUrl && <Button icon="restart" onClick={restartBriefAudio} disabled={audioBusy || state.tts?.status !== "ready"}>Restart</Button>}
+            {!audioUrl && <Button icon="volume" onClick={playBriefAudio} disabled={audioBusy || state.tts?.status !== "ready"}>{audioBusy ? "Generating..." : "Generate audio"}</Button>}
             <Button icon="lenses" onClick={() => deliberateBrief(false)} disabled={deliberationBusy || !(state.briefConfig?.perspectiveLenses || []).some((lens) => lens.enabled !== false)}>{deliberationBusy ? "Deliberating..." : selected.artifact?.deliberation ? "Show deliberation" : "Deliberate brief"}</Button>
             {state.tts?.status !== "ready" && <span>Set up ElevenLabs in Settings to play briefs aloud.</span>}
           </div>
+          {audioUrl && <div className="brief-audio-player" aria-label="Brief audio controls">
+            <Button icon={audioPlaying ? "pause" : "volume"} onClick={playBriefAudio} disabled={audioBusy || state.tts?.status !== "ready"}>{audioBusy ? "Generating..." : audioPlaying ? "Pause" : "Play"}</Button>
+            <div className="brief-audio-buttons" aria-label="Audio skip controls">
+              <Button icon="rewind" onClick={() => nudgeBriefAudio(-15)} disabled={audioBusy || state.tts?.status !== "ready"}>-15s</Button>
+              <Button icon="forward" onClick={() => nudgeBriefAudio(15)} disabled={audioBusy || state.tts?.status !== "ready"}>+15s</Button>
+              <Button icon="restart" onClick={restartBriefAudio} disabled={audioBusy || state.tts?.status !== "ready"}>Restart</Button>
+            </div>
+            <label className="audio-scrubber">
+              <span>{formatAudioTime(audioCurrentTime)}</span>
+              <input
+                type="range"
+                min="0"
+                max={audioTimelineMax}
+                step="0.1"
+                value={Math.min(audioCurrentTime || 0, audioTimelineMax)}
+                onChange={(event) => seekBriefAudio(Number(event.target.value))}
+                aria-label="Audio timeline"
+              />
+              <span>{displayedAudioDuration > 0 ? formatAudioTime(displayedAudioDuration) : "--:--"}</span>
+            </label>
+          </div>}
           {audioMessage && <p className={audioMessage.includes("generated") ? "ok-text" : "warn-text"}>{audioMessage}</p>}
           {deliberationMessage && <p className={deliberationMessage.includes("saved") || deliberationMessage.includes("regenerated") ? "ok-text" : "warn-text"}>{deliberationMessage}</p>}
           <Markdown text={selected.artifact?.onePageBrief || ""} />
@@ -1873,6 +1974,7 @@ function Onboarding({ state, mutate, refresh }) {
   const [sttBusy, setSttBusy] = React.useState(false);
   const [sttMessage, setSttMessage] = React.useState("");
   const [calendarMessage, setCalendarMessage] = React.useState("");
+  const [calendarAuthUrl, setCalendarAuthUrl] = React.useState("");
   const [perspectivePrompt, setPerspectivePrompt] = React.useState("");
   const [perspectiveDrafts, setPerspectiveDrafts] = React.useState(state.briefConfig?.perspectiveLenses || []);
   const [perspectiveMessage, setPerspectiveMessage] = React.useState("");
@@ -2297,13 +2399,33 @@ function Onboarding({ state, mutate, refresh }) {
     }
     await saveChosenSources(ready);
   };
+  const waitForCalendarConnection = async () => {
+    for (let attempt = 0; attempt < 24; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 2500));
+      try {
+        const result = await api("/api/google-calendar/test", { method: "POST", body: JSON.stringify({}) });
+        if (result.state?.connectors?.googleCalendar?.status === "ready") {
+          await refresh();
+          setCalendarMessage("Google Calendar connected. You can close the browser tab and continue.");
+          return true;
+        }
+      } catch {
+        await refresh();
+      }
+    }
+    setCalendarMessage("Google consent opened. If it says connected in the browser, close that tab and click Refresh status.");
+    return false;
+  };
   const startCalendarOAuth = async () => {
     setCalendarMessage("");
+    setCalendarAuthUrl("");
     try {
       const result = await api("/api/google-calendar/oauth/start", { method: "POST", body: JSON.stringify({}) });
+      setCalendarAuthUrl(result.authUrl || "");
       await refresh();
-      setCalendarMessage("Google consent opened. When it says connected, return here and refresh status.");
       await openExternalUrl(result.authUrl);
+      setCalendarMessage("Google consent opened in your browser. Complete it there, then return here.");
+      waitForCalendarConnection();
     } catch (error) {
       setCalendarMessage(error.message || "Could not start Google Calendar connection.");
     }
@@ -2520,7 +2642,11 @@ function Onboarding({ state, mutate, refresh }) {
             <Button type="button" icon="external" onClick={startCalendarOAuth}>{googleCalendarConnected ? "Reconnect Google Calendar" : "Connect Google Calendar"}</Button>
             <Button type="button" icon="run" onClick={refreshCalendarStatus}>Refresh status</Button>
           </div>
-          {calendarMessage && <p className={calendarMessage.includes("connected") || calendarMessage.includes("opened") ? "ok-text" : "warn-text"}>{calendarMessage}</p>}
+          {calendarMessage && <p className={calendarMessage.includes("connected") || calendarMessage.includes("opened") || calendarMessage.includes("copied") ? "ok-text" : "warn-text"}>{calendarMessage}</p>}
+          {calendarAuthUrl && <div className="setup-link-row">
+            <Button type="button" icon="external" onClick={() => openExternalUrl(calendarAuthUrl).then(() => setCalendarMessage("Google consent opened in your browser. When it says connected, return here and refresh status.")).catch((error) => setCalendarMessage(error.message || "Could not open Google consent."))}>Open consent again</Button>
+            <Button type="button" icon="copy" onClick={() => copyText(calendarAuthUrl).then(() => setCalendarMessage("Google consent link copied. Paste it into your browser to continue.")).catch(() => setCalendarMessage("Could not copy the link. Try Open consent again."))}>Copy consent link</Button>
+          </div>}
         </div>
         <div className="row"><Button onClick={() => go("sources")}>Back</Button><Button onClick={() => go("audio")}>Skip calendar</Button><Button kind="primary" onClick={() => go("audio")}>Continue</Button></div>
       </section>}
@@ -2612,6 +2738,7 @@ function Settings({ state, mutate, refresh, desktopUpdate }) {
   const [googleCalendarSelection, setGoogleCalendarSelection] = React.useState(state.connectors?.googleCalendar?.selectedCalendarIds || ["primary"]);
   const [googleCalendarSelectionDirty, setGoogleCalendarSelectionDirty] = React.useState(false);
   const [googleCalendarMessage, setGoogleCalendarMessage] = React.useState("");
+  const [googleCalendarAuthUrl, setGoogleCalendarAuthUrl] = React.useState("");
   const [model, setModel] = React.useState({
     enabled: true,
     provider: state.model.provider || "openai",
@@ -2676,14 +2803,34 @@ function Settings({ state, mutate, refresh, desktopUpdate }) {
   const startGoogleCalendarOAuth = async (e) => {
     e.preventDefault();
     setGoogleCalendarMessage("");
+    setGoogleCalendarAuthUrl("");
     try {
       const result = await api("/api/google-calendar/oauth/start", { method: "POST", body: JSON.stringify({}) });
+      setGoogleCalendarAuthUrl(result.authUrl || "");
       await refresh();
-      setGoogleCalendarMessage("Google consent opened. Complete it, then return here and refresh calendars.");
       await openExternalUrl(result.authUrl);
+      setGoogleCalendarMessage("Google consent opened in your browser. Complete it there, then return here.");
+      waitForGoogleCalendarConnection();
     } catch (error) {
       setGoogleCalendarMessage(error.message);
     }
+  };
+  const waitForGoogleCalendarConnection = async () => {
+    for (let attempt = 0; attempt < 24; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 2500));
+      try {
+        const result = await api("/api/google-calendar/calendars", { method: "POST", body: JSON.stringify({}) });
+        setGoogleCalendarSelection(result.selectedCalendarIds || ["primary"]);
+        setGoogleCalendarSelectionDirty(false);
+        await refresh();
+        setGoogleCalendarMessage("Google Calendar connected. You can close the browser tab and choose calendars.");
+        return true;
+      } catch {
+        await refresh();
+      }
+    }
+    setGoogleCalendarMessage("Google consent opened. If it says connected in the browser, close that tab and click Refresh calendars.");
+    return false;
   };
   const testGoogleCalendar = async () => {
     setGoogleCalendarMessage("");
@@ -3061,7 +3208,11 @@ function Settings({ state, mutate, refresh, desktopUpdate }) {
             {calendar.summary || calendar.id}{calendar.primary ? " (primary)" : ""}
           </label>) : <p className="hint">Refresh calendars to load your available Google calendars.</p>}
         </div>}
-        {googleCalendarMessage && <p className={googleCalendarMessage.includes("ready") || googleCalendarMessage.includes("opened") || googleCalendarMessage.includes("disconnected") ? "ok-text" : "warn-text"}>{googleCalendarMessage}</p>}
+        {googleCalendarMessage && <p className={googleCalendarMessage.includes("ready") || googleCalendarMessage.includes("opened") || googleCalendarMessage.includes("copied") || googleCalendarMessage.includes("disconnected") ? "ok-text" : "warn-text"}>{googleCalendarMessage}</p>}
+        {googleCalendarAuthUrl && <div className="setup-link-row">
+          <Button type="button" icon="external" onClick={() => openExternalUrl(googleCalendarAuthUrl).then(() => setGoogleCalendarMessage("Google consent opened in your browser. Complete it, then return here and refresh calendars.")).catch((error) => setGoogleCalendarMessage(error.message || "Could not open Google consent."))}>Open consent again</Button>
+          <Button type="button" icon="copy" onClick={() => copyText(googleCalendarAuthUrl).then(() => setGoogleCalendarMessage("Google consent link copied. Paste it into your browser to continue.")).catch(() => setGoogleCalendarMessage("Could not copy the link. Try Open consent again."))}>Copy consent link</Button>
+        </div>}
         <div className="modal-actions"><Button type="button" onClick={closeGoogleCalendarModal}>Cancel</Button>{googleCalendarConnected && <Button type="button" icon="run" onClick={refreshGoogleCalendars}>Refresh calendars</Button>}{googleCalendarConnected && <Button type="button" icon="save" onClick={saveGoogleCalendarSelection}>Save calendars</Button>}<Button type="button" icon="run" onClick={testGoogleCalendar}>Test</Button>{googleCalendarConnected && <Button type="button" icon="trash" onClick={disconnectGoogleCalendar}>Disconnect</Button>}<Button icon="save" kind="primary">{googleCalendarConnected ? "Reconnect Google" : "Connect Google"}</Button></div>
       </form>
     </div>}

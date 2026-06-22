@@ -2528,6 +2528,76 @@ span.section-target-select {
   color: var(--muted);
   font-size: 14px;
 }
+.brief-audio-player {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  padding: 12px;
+  margin: -4px 0 14px;
+  border: 1px solid var(--line);
+  background: var(--paper);
+  overflow: hidden;
+}
+.brief-audio-buttons {
+  display: flex;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+.audio-scrubber {
+  display: grid;
+  grid-template-columns: 44px minmax(140px, 1fr) 44px;
+  gap: 10px;
+  align-items: center;
+  flex: 1 1 220px;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 800;
+}
+.audio-scrubber input {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  min-width: 0;
+  height: 24px;
+  margin: 0;
+  background: transparent;
+  cursor: pointer;
+}
+.audio-scrubber input::-webkit-slider-runnable-track {
+  height: 6px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--ink) 42%, transparent);
+  box-shadow: inset 0 1px 2px rgba(13, 13, 13, 0.16);
+}
+.audio-scrubber input::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 24px;
+  height: 24px;
+  margin-top: -9px;
+  border-radius: 999px;
+  border: 1px solid rgba(13, 13, 13, 0.28);
+  background: #fffaf2;
+  box-shadow: 0 2px 5px rgba(13, 13, 13, 0.18);
+}
+.audio-scrubber input::-moz-range-track {
+  height: 6px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--ink) 42%, transparent);
+  box-shadow: inset 0 1px 2px rgba(13, 13, 13, 0.16);
+}
+.audio-scrubber input::-moz-range-thumb {
+  width: 24px;
+  height: 24px;
+  border-radius: 999px;
+  border: 1px solid rgba(13, 13, 13, 0.28);
+  background: #fffaf2;
+  box-shadow: 0 2px 5px rgba(13, 13, 13, 0.18);
+}
+.audio-scrubber span:last-child {
+  text-align: right;
+}
 .telegram-pairing {
   display: grid;
   gap: 16px;
@@ -2686,6 +2756,9 @@ span.section-target-select {
   .how-steps { display: grid; }
   .how-arrow { display: none; }
   .table-title-row, .lens-card-head, .council-head, .council-editor-head, .source-tip, .member-head, .page-actions { align-items: stretch; flex-direction: column; }
+  .brief-audio-player { flex-wrap: wrap; }
+  .brief-audio-player > .btn,
+  .brief-audio-buttons { flex: 1 1 auto; }
   .table-search, .mini-search { min-width: 0; width: 100%; }
   .lens-pick { grid-template-columns: 44px minmax(0, 1fr); }
   .lens-pick .badge, .lens-chevron { display: none; }
