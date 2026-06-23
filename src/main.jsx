@@ -1342,6 +1342,13 @@ function Sources({ state, mutate, refresh }) {
     if (source.type === "Calendar" && state.connectors?.googleCalendar?.status === "ready") return "configured";
     return source.credentialsStatus;
   };
+  const transcriptionStatusText = (source) => {
+    const job = source.config?.lastTranscriptionJob;
+    if (!job || !["queued", "running", "failed"].includes(job.status)) return "";
+    if (job.status === "queued") return `Queued "${job.episodeTitle || "latest episode"}" for transcription.`;
+    if (job.status === "failed") return `Transcription failed: ${job.error || "check Settings and try again."}`;
+    return `Transcribing "${job.episodeTitle || "latest episode"}" · ${job.completedChunks || 0}/${job.totalChunks || "?"} chunks`;
+  };
   const sourceTypeChoices = [
     ["RSS", "RSS / Feed"],
     ["Web", "Web search"],
@@ -1372,7 +1379,7 @@ function Sources({ state, mutate, refresh }) {
         const displayLocator = sourceDisplayLocator(s);
         const active = s.status === "active";
         return <tr key={s.id}>
-          <td><div className="source-name-cell"><BrandLogo name={s.type} /><div><strong>{s.name}</strong><small title={displayLocator}>{displayLocator}</small></div></div></td>
+          <td><div className="source-name-cell"><BrandLogo name={s.type} /><div><strong>{s.name}</strong><small title={displayLocator}>{displayLocator}</small>{transcriptionStatusText(s) && <small className="source-transcription-status">{transcriptionStatusText(s)}</small>}</div></div></td>
           <td>{s.type === "Newsletter" ? "Journal / Library" : s.type}</td>
           <td><button type="button" className={`source-toggle ${active ? "active" : "paused"}`} onClick={() => mutate(`/api/sources/${s.id}`, { status: active ? "paused" : "active" }, "PATCH")} aria-pressed={active}><span></span>{active ? "Active" : "Paused"}</button></td>
           <td><Badge tone={["configured", "not required"].includes(credential) ? "ok" : credential === "optional" ? "muted" : "warn"}>{credential}</Badge></td>
@@ -2076,7 +2083,7 @@ function Briefs({ state, runWorkflow, refresh }) {
               <span><small>{date.toLocaleDateString()} · {date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}</small><strong>{briefDisplayTitle(run)}</strong><em>{(run.artifact?.selectedIssues || []).slice(0, 3).map((issue) => issue.sourceType || "Signal").join(" · ") || (running ? "In progress" : "Brief")}</em></span>
               <Badge tone={running ? "muted" : failed ? "err" : delivered ? "ok" : "warn"}>{running ? "Generating..." : failed ? "Failed" : delivered ? "Delivered" : "Saved"}</Badge>
             </button>
-            <button type="button" className="brief-delete-button" onClick={() => requestDeleteBrief(run)} disabled={deletingId === run.id || running} aria-label={`Delete ${briefDisplayTitle(run)}`}>
+            <button type="button" className="brief-delete-button" onClick={() => requestDeleteBrief(run)} disabled={deletingId === run.id} aria-label={`${running ? "Stop and delete" : "Delete"} ${briefDisplayTitle(run)}`}>
               <Icon name="trash" />
             </button>
           </div>;
@@ -2128,8 +2135,8 @@ function Briefs({ state, runWorkflow, refresh }) {
         <div className="modal-card destructive-modal" role="dialog" aria-modal="true" aria-labelledby="delete-brief-title">
           <div className="modal-head">
             <div>
-              <h2 id="delete-brief-title">Delete brief?</h2>
-              <p>This removes the saved brief from this app, including any generated audio for it.</p>
+              <h2 id="delete-brief-title">{pendingDeleteRun.status === "running" ? "Stop and delete run?" : "Delete brief?"}</h2>
+              <p>{pendingDeleteRun.status === "running" ? "This stops the active generation, cancels queued transcription work for it, and removes it from this app." : "This removes the saved brief from this app, including any generated audio for it."}</p>
             </div>
             <button type="button" onClick={() => setPendingDeleteRun(null)} disabled={!!deletingId}><Icon name="x" /></button>
           </div>
@@ -2140,7 +2147,7 @@ function Briefs({ state, runWorkflow, refresh }) {
           {deleteMessage && <p className="warn-text">{deleteMessage}</p>}
           <div className="modal-actions">
             <Button type="button" onClick={() => setPendingDeleteRun(null)} disabled={!!deletingId}>Cancel</Button>
-            <Button type="button" icon="trash" className="danger-button" onClick={confirmDeleteBrief} disabled={!!deletingId}>{deletingId ? "Deleting..." : "Delete brief"}</Button>
+            <Button type="button" icon="trash" className="danger-button" onClick={confirmDeleteBrief} disabled={!!deletingId}>{deletingId ? "Deleting..." : pendingDeleteRun.status === "running" ? "Stop and delete" : "Delete brief"}</Button>
           </div>
         </div>
       </div>}

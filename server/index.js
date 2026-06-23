@@ -33,6 +33,10 @@ const dataDir = process.env.PILLAR_DATA_DIR ? path.resolve(process.env.PILLAR_DA
 fs.mkdirSync(dataDir, { recursive: true });
 const dbPath = process.env.PILLAR_DB_PATH ? path.resolve(process.env.PILLAR_DB_PATH) : path.join(dataDir, "pillar-brief.sqlite");
 const execFileAsync = promisify(execFile);
+const activeWorkflowRuns = new Map();
+let transcriptionWorkerRunning = false;
+let activeTranscriptionChild = null;
+let activeTranscriptionJob = null;
 const audioDir = path.join(dataDir, "audio");
 fs.mkdirSync(audioDir, { recursive: true });
 const modelsDir = path.join(dataDir, "models");
@@ -248,6 +252,25 @@ function migrate() {
       value TEXT NOT NULL DEFAULT '',
       updated_at TEXT NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS transcription_jobs (
+      id TEXT PRIMARY KEY,
+      source_id TEXT REFERENCES sources(id) ON DELETE SET NULL,
+      run_id TEXT REFERENCES workflow_runs(id) ON DELETE SET NULL,
+      episode_guid TEXT NOT NULL DEFAULT '',
+      episode_title TEXT NOT NULL DEFAULT '',
+      episode_url TEXT NOT NULL DEFAULT '',
+      audio_url TEXT NOT NULL DEFAULT '',
+      status TEXT NOT NULL DEFAULT 'queued',
+      total_chunks INTEGER NOT NULL DEFAULT 0,
+      completed_chunks INTEGER NOT NULL DEFAULT 0,
+      chunks_json TEXT NOT NULL DEFAULT '[]',
+      transcript_document_id TEXT,
+      fingerprint TEXT NOT NULL DEFAULT '',
+      error TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      completed_at TEXT
+    );
   `);
   const sourceColumns = db.prepare("PRAGMA table_info(sources)").all().map((c) => c.name);
   if (!sourceColumns.includes("config_json")) {
@@ -279,6 +302,8 @@ function migrate() {
   if (!normalizedColumns.includes("usage_count")) db.exec("ALTER TABLE normalized_items ADD COLUMN usage_count INTEGER NOT NULL DEFAULT 0;");
   db.exec("UPDATE normalized_items SET first_seen_at = COALESCE(first_seen_at, created_at), last_seen_at = COALESCE(last_seen_at, created_at) WHERE first_seen_at IS NULL OR last_seen_at IS NULL;");
   db.exec("UPDATE brief_config SET product_name='Pillar Brief' WHERE product_name IN ('Strategy Console', 'Intelligence Desk');");
+  db.exec("UPDATE workflow_runs SET status='failed', completed_at=COALESCE(completed_at, datetime('now')), error=COALESCE(error, 'Run was interrupted before the app restarted.') WHERE status='running';");
+  db.exec("UPDATE transcription_jobs SET status='queued', updated_at=datetime('now') WHERE status='running';");
 }
 
 const now = () => new Date().toISOString();
@@ -397,6 +422,49 @@ function localTargetTriple() {
   if (process.platform === "win32") return `${arch}-pc-windows-msvc`;
   if (process.platform === "linux") return `${arch}-unknown-linux-gnu`;
   return "";
+}
+
+function cancellationError(message = "Operation cancelled") {
+  const error = new Error(message);
+  error.name = "AbortError";
+  error.cancelled = true;
+  return error;
+}
+
+function isCancellationError(error) {
+  return error?.cancelled || error?.name === "AbortError" || String(error?.message || "").toLowerCase().includes("cancelled");
+}
+
+function throwIfAborted(signal) {
+  if (signal?.aborted) throw cancellationError();
+}
+
+function execFileTracked(command, args = [], options = {}, { signal, timeoutMs } = {}) {
+  return new Promise((resolve, reject) => {
+    throwIfAborted(signal);
+    const child = execFile(command, args, { ...options, timeout: timeoutMs ?? options.timeout }, (error, stdout, stderr) => {
+      cleanup();
+      if (signal?.aborted) return reject(cancellationError());
+      if (error) return reject(error);
+      resolve({ stdout, stderr });
+    });
+    const abort = () => {
+      try { child.kill("SIGTERM"); } catch {}
+      setTimeout(() => {
+        try {
+          if (!child.killed) child.kill("SIGKILL");
+        } catch {}
+      }, 1500).unref?.();
+      cleanup();
+      reject(cancellationError());
+    };
+    const cleanup = () => {
+      signal?.removeEventListener?.("abort", abort);
+      if (activeTranscriptionChild === child) activeTranscriptionChild = null;
+    };
+    activeTranscriptionChild = child;
+    signal?.addEventListener?.("abort", abort, { once: true });
+  });
 }
 
 function whisperBinaryCandidates() {
@@ -1359,13 +1427,18 @@ async function deliverBriefToTelegram({ runId, artifact }) {
 async function fetchWithTimeout(url, options = {}, timeoutMs = 15000) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  const externalSignal = options.signal;
+  const abort = () => controller.abort();
+  externalSignal?.addEventListener?.("abort", abort, { once: true });
   try {
     return await fetch(url, { ...options, signal: controller.signal });
   } catch (error) {
+    if (externalSignal?.aborted) throw cancellationError();
     if (error.name === "AbortError") throw new Error(`Request timed out after ${Math.round(timeoutMs / 1000)} seconds`);
     throw error;
   } finally {
     clearTimeout(timeout);
+    externalSignal?.removeEventListener?.("abort", abort);
   }
 }
 
@@ -1635,8 +1708,8 @@ function safeExtFromContentType(contentType = "", url = "") {
   return ".mp3";
 }
 
-async function downloadAudio(url, label) {
-  const response = await fetchWithTimeout(url, {}, 30000);
+async function downloadAudio(url, label, { signal } = {}) {
+  const response = await fetchWithTimeout(url, { signal }, 30000);
   if (!response.ok) throw new Error(`Audio download failed: ${response.status} ${response.statusText}`);
   const contentType = response.headers.get("content-type") || "";
   const extension = safeExtFromContentType(contentType, url);
@@ -1646,16 +1719,16 @@ async function downloadAudio(url, label) {
   return { filePath, bytes: bytes.length, contentType };
 }
 
-async function splitAudio(filePath, label) {
+async function splitAudio(filePath, label, { signal } = {}) {
   const converter = await audioConverterStatus();
   if (converter.available) {
     try {
-      const { stdout } = await execFileAsync(converter.path, [
+      const { stdout } = await execFileTracked(converter.path, [
         "--input", filePath,
         "--output-dir", audioDir,
         "--label", label,
         "--chunk-seconds", "600",
-      ], { timeout: 900000, maxBuffer: 1024 * 1024 });
+      ], { maxBuffer: 1024 * 1024 }, { signal, timeoutMs: 900000 });
       const payload = JSON.parse(stdout || "{}");
       const chunks = Array.isArray(payload.chunks) ? payload.chunks.filter((chunk) => fs.existsSync(chunk)) : [];
       if (chunks.length) return chunks;
@@ -1669,7 +1742,7 @@ async function splitAudio(filePath, label) {
     throw new Error("Local podcast transcription is unavailable because the bundled audio converter is missing. Reinstall the app or set PILLAR_AUDIO_CONVERT_PATH for self-hosted/server installs.");
   }
   const outputPattern = path.join(audioDir, `${label}-part-%03d.m4a`);
-  await execFileAsync(status.path, [
+  await execFileTracked(status.path, [
     "-hide_banner", "-loglevel", "error", "-y",
     "-i", filePath,
     "-f", "segment",
@@ -1677,7 +1750,7 @@ async function splitAudio(filePath, label) {
     "-c:a", "aac",
     "-b:a", "64k",
     outputPattern,
-  ]);
+  ], {}, { signal, timeoutMs: 900000 });
   return fs.readdirSync(audioDir)
     .filter((file) => file.startsWith(`${label}-part-`) && file.endsWith(".m4a"))
     .sort()
@@ -1696,18 +1769,18 @@ function isWavFile(filePath) {
   }
 }
 
-async function ensureWhisperWav(filePath) {
+async function ensureWhisperWav(filePath, { signal } = {}) {
   if (isWavFile(filePath)) return { filePath, cleanup: false };
   const converter = await audioConverterStatus();
   if (converter.available) {
     const label = `whisper-input-${id("wav")}`;
     try {
-      const { stdout } = await execFileAsync(converter.path, [
+      const { stdout } = await execFileTracked(converter.path, [
         "--input", filePath,
         "--output-dir", audioDir,
         "--label", label,
         "--chunk-seconds", "86400",
-      ], { timeout: 180000, maxBuffer: 1024 * 1024 });
+      ], { maxBuffer: 1024 * 1024 }, { signal, timeoutMs: 180000 });
       const payload = JSON.parse(stdout || "{}");
       const wavPath = Array.isArray(payload.chunks) ? payload.chunks.find((chunk) => fs.existsSync(chunk)) : "";
       if (wavPath) return { filePath: wavPath, cleanup: true };
@@ -1721,31 +1794,31 @@ async function ensureWhisperWav(filePath) {
     throw new Error("Local speech-to-text needs WAV audio, but the bundled audio converter is missing. Reinstall the app or set PILLAR_AUDIO_CONVERT_PATH for self-hosted/server installs.");
   }
   const wavPath = path.join(audioDir, `whisper-input-${id("wav")}.wav`);
-  await execFileAsync(status.path, [
+  await execFileTracked(status.path, [
     "-hide_banner", "-loglevel", "error", "-y",
     "-i", filePath,
     "-ar", "16000",
     "-ac", "1",
     "-c:a", "pcm_s16le",
     wavPath,
-  ], { timeout: 180000 });
+  ], {}, { signal, timeoutMs: 180000 });
   return { filePath: wavPath, cleanup: true };
 }
 
-async function transcribeWithWhisperCpp(filePath) {
+async function transcribeWithWhisperCpp(filePath, { signal } = {}) {
   const status = await localSttStatus();
   if (!status.available) throw new Error(status.message);
-  const wav = await ensureWhisperWav(filePath);
+  const wav = await ensureWhisperWav(filePath, { signal });
   const outputPrefix = path.join(audioDir, `whisper-output-${id("txt")}`);
   try {
-    const { stdout } = await execFileAsync(status.binaryPath, [
+    const { stdout } = await execFileTracked(status.binaryPath, [
       "-m", status.modelPath,
       "-f", wav.filePath,
       "-otxt",
       "-of", outputPrefix,
       "-nt",
       "--no-gpu",
-    ], { timeout: 900000, maxBuffer: 1024 * 1024 * 8, env: whisperRuntimeEnv(status.binaryPath) });
+    ], { maxBuffer: 1024 * 1024 * 8, env: whisperRuntimeEnv(status.binaryPath) }, { signal, timeoutMs: 1200000 });
     const outputFile = `${outputPrefix}.txt`;
     const transcript = fs.existsSync(outputFile) ? fs.readFileSync(outputFile, "utf8") : stdout;
     try { fs.unlinkSync(outputFile); } catch {}
@@ -1757,9 +1830,9 @@ async function transcribeWithWhisperCpp(filePath) {
   }
 }
 
-async function transcribeAudioFile(filePath, modelSettingsRow) {
+async function transcribeAudioFile(filePath, modelSettingsRow, { signal } = {}) {
   const localStatus = await localSttStatus();
-  if (localStatus.available) return transcribeWithWhisperCpp(filePath);
+  if (localStatus.available) return transcribeWithWhisperCpp(filePath, { signal });
   const apiKey = modelSettingsRow.api_key || providerEnvKey(modelSettingsRow.provider);
   if (!apiKey) throw new Error(`Local speech-to-text is not ready. ${localStatus.message} Add an OpenAI-compatible key in Settings as a cloud fallback.`);
   if (!["openai", "custom"].includes(modelSettingsRow.provider)) {
@@ -1778,6 +1851,7 @@ async function transcribeAudioFile(filePath, modelSettingsRow) {
     method: "POST",
     headers: { Authorization: `Bearer ${apiKey}` },
     body: form,
+    signal,
   }, 180000);
 
   if (!response.ok && modelSettingsRow.provider === "openai" && !process.env.OPENAI_TRANSCRIPTION_MODEL) {
@@ -1789,6 +1863,7 @@ async function transcribeAudioFile(filePath, modelSettingsRow) {
       method: "POST",
       headers: { Authorization: `Bearer ${apiKey}` },
       body: retryForm,
+      signal,
     }, 180000);
   }
 
@@ -1842,6 +1917,266 @@ function saveTranscriptDocument({ source, episode, transcript }) {
   return { skipped: false, documentId: docId, fingerprint };
 }
 
+function transcriptFingerprint(sourceId, episode) {
+  return createHash("sha256").update(`${sourceId}:${episode.guid || episode.audioUrl}`).digest("hex");
+}
+
+function transcriptionJobId(sourceId, episode) {
+  return `tx-${createHash("sha1").update(`${sourceId}:${episode.guid || episode.audioUrl}`).digest("hex").slice(0, 24)}`;
+}
+
+function substantialEpisodeText(episode) {
+  const text = stripHtml(episode.description || "");
+  const words = text ? text.split(/\s+/).filter(Boolean).length : 0;
+  return words >= 450 ? text : "";
+}
+
+function transcriptionJobs() {
+  return all(`SELECT * FROM transcription_jobs ORDER BY updated_at DESC LIMIT 50`).map((row) => ({
+    id: row.id,
+    sourceId: row.source_id,
+    runId: row.run_id,
+    episodeGuid: row.episode_guid,
+    episodeTitle: row.episode_title,
+    episodeUrl: row.episode_url,
+    audioUrl: row.audio_url,
+    status: row.status,
+    totalChunks: row.total_chunks,
+    completedChunks: row.completed_chunks,
+    chunks: parse(row.chunks_json, []),
+    transcriptDocumentId: row.transcript_document_id,
+    fingerprint: row.fingerprint,
+    error: row.error,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    completedAt: row.completed_at,
+  }));
+}
+
+function updateSourceTranscriptionStatus(source, status) {
+  const config = {
+    ...(source.config || {}),
+    lastTranscriptionJob: status,
+    lastTranscriptionStatusAt: now(),
+  };
+  run("UPDATE sources SET config_json=$config, updated_at=$t WHERE id=$id", { $id: source.id, $config: json(config), $t: now() });
+}
+
+function upsertTranscriptionJob({ source, episode, runId = "" }) {
+  const t = now();
+  const fingerprint = transcriptFingerprint(source.id, episode);
+  const jobId = transcriptionJobId(source.id, episode);
+  const existingJob = get("SELECT * FROM transcription_jobs WHERE id=$id", { $id: jobId });
+  if (!existingJob) {
+    run(`INSERT INTO transcription_jobs (id, source_id, run_id, episode_guid, episode_title, episode_url, audio_url, status, fingerprint, created_at, updated_at)
+         VALUES ($id, $sourceId, $runId, $guid, $title, $url, $audioUrl, 'queued', $fingerprint, $t, $t)`, {
+      $id: jobId,
+      $sourceId: source.id,
+      $runId: runId || "",
+      $guid: episode.guid || "",
+      $title: episode.title || "Untitled episode",
+      $url: episode.link || episode.audioUrl || "",
+      $audioUrl: episode.audioUrl || "",
+      $fingerprint: fingerprint,
+      $t: t,
+    });
+  } else if (["failed", "cancelled"].includes(existingJob.status)) {
+    run(`UPDATE transcription_jobs SET status='queued', error='', run_id=COALESCE(NULLIF($runId, ''), run_id), updated_at=$t WHERE id=$id`, {
+      $id: jobId,
+      $runId: runId || "",
+      $t: t,
+    });
+  }
+  const job = get("SELECT * FROM transcription_jobs WHERE id=$id", { $id: jobId });
+  updateSourceTranscriptionStatus(source, {
+    id: jobId,
+    status: job.status,
+    episodeTitle: episode.title,
+    totalChunks: job.total_chunks,
+    completedChunks: job.completed_chunks,
+    error: job.error || "",
+  });
+  return job;
+}
+
+async function requestPodcastTranscription(sourceId, mode = "today", { runId = "", signal } = {}) {
+  throwIfAborted(signal);
+  const row = get("SELECT * FROM sources WHERE id=$id", { $id: sourceId });
+  if (!row) throw new Error("Source not found");
+  const source = { ...row, config: parse(row.config_json, {}) };
+  if (source.type !== "Podcast") throw new Error("Source is not a podcast");
+  const feedUrl = source.config.feedUrl || source.locator;
+  if (!feedUrl) throw new Error("Podcast source does not have an RSS feed URL");
+
+  const feed = await fetchWithTimeout(feedUrl, { signal });
+  if (!feed.ok) throw new Error(`RSS fetch failed: ${feed.status} ${feed.statusText}`);
+  const episodes = parsePodcastRss(await feed.text());
+  const candidates = mode === "latest" ? episodes : episodes.filter(episodeIsToday);
+  const episode = candidates[0];
+  if (!episode) {
+    const fetchedAt = now();
+    const config = { ...source.config, lastFetchedAt: fetchedAt, lastFetchCacheStatus: "no-episode", lastFetchedCount: episodes.length, lastInsertedCount: 0 };
+    run("UPDATE sources SET config_json=$config, updated_at=$t WHERE id=$id", { $id: source.id, $config: json(config), $t: fetchedAt });
+    return { ok: true, transcribed: false, queued: false, reason: mode === "latest" ? "No podcast episodes with audio were found." : "No podcast episode published today was found.", episodesChecked: episodes.length };
+  }
+
+  const fingerprint = transcriptFingerprint(source.id, episode);
+  const existingEpisode = get("SELECT id FROM normalized_items WHERE fingerprint=$fingerprint", { $fingerprint: fingerprint });
+  if (existingEpisode) {
+    const config = { ...source.config, lastTranscribedGuid: episode.guid, lastTranscribedAt: now(), lastTranscriptItemId: existingEpisode.id };
+    run("UPDATE sources SET config_json=$config, updated_at=$t WHERE id=$id", { $id: source.id, $config: json(config), $t: now() });
+    return {
+      ok: true,
+      transcribed: false,
+      skipped: true,
+      queued: false,
+      reason: "Episode was already transcribed.",
+      episode: { title: episode.title, pubDate: episode.pubDate, audioUrl: episode.audioUrl },
+      documentId: source.config.lastTranscriptDocumentId || null,
+      words: 0,
+      chunks: 0,
+      audioBytes: 0,
+    };
+  }
+
+  const embeddedTranscript = substantialEpisodeText(episode);
+  if (embeddedTranscript) {
+    const saved = saveTranscriptDocument({ source, episode, transcript: embeddedTranscript });
+    const config = { ...source.config, lastTranscribedGuid: episode.guid, lastTranscribedAt: now(), lastTranscriptDocumentId: saved.documentId };
+    run("UPDATE sources SET config_json=$config, updated_at=$t WHERE id=$id", { $id: source.id, $config: json(config), $t: now() });
+    audit("podcast.transcribed", "source", source.id, `Used episode notes transcript: ${episode.title}`, { documentId: saved.documentId, fingerprint: saved.fingerprint }, "system");
+    return { ok: true, transcribed: !saved.skipped, queued: false, fromEpisodeNotes: true, episode: { title: episode.title, pubDate: episode.pubDate, audioUrl: episode.audioUrl }, documentId: saved.documentId, words: embeddedTranscript.split(/\s+/).length, chunks: 0, audioBytes: 0 };
+  }
+
+  const job = upsertTranscriptionJob({ source, episode, runId });
+  startTranscriptionWorker();
+  return {
+    ok: true,
+    transcribed: false,
+    queued: true,
+    reason: job.status === "running"
+      ? `Transcribing "${episode.title}" in the background · ${job.completed_chunks || 0}/${job.total_chunks || "?"} chunks complete.`
+      : `Queued "${episode.title}" for background transcription.`,
+    jobId: job.id,
+    status: job.status,
+    episode: { title: episode.title, pubDate: episode.pubDate, audioUrl: episode.audioUrl },
+    chunks: job.total_chunks,
+    completedChunks: job.completed_chunks,
+  };
+}
+
+async function processTranscriptionJob(jobRow) {
+  const sourceRow = get("SELECT * FROM sources WHERE id=$id", { $id: jobRow.source_id });
+  if (!sourceRow) throw new Error("Podcast source no longer exists");
+  const source = { ...sourceRow, config: parse(sourceRow.config_json, {}) };
+  const episode = {
+    guid: jobRow.episode_guid,
+    title: jobRow.episode_title,
+    link: jobRow.episode_url,
+    audioUrl: jobRow.audio_url,
+    pubDate: "",
+  };
+  const controller = new AbortController();
+  const signal = controller.signal;
+  activeTranscriptionJob = { id: jobRow.id, runId: jobRow.run_id || "", controller };
+  const t = now();
+  run("UPDATE transcription_jobs SET status='running', error='', updated_at=$t WHERE id=$id", { $id: jobRow.id, $t: t });
+  updateSourceTranscriptionStatus(source, {
+    id: jobRow.id,
+    status: "running",
+    episodeTitle: jobRow.episode_title,
+    totalChunks: jobRow.total_chunks,
+    completedChunks: jobRow.completed_chunks,
+    error: "",
+  });
+  const label = createHash("sha1").update(`${jobRow.id}:${Date.now()}`).digest("hex").slice(0, 14);
+  const existingChunks = parse(jobRow.chunks_json, []);
+  let chunkStates = existingChunks;
+  let partFiles = existingChunks.map((chunk) => chunk.path).filter((filePath) => filePath && fs.existsSync(filePath));
+  let downloadedPath = "";
+  try {
+    if (!partFiles.length) {
+      const downloaded = await downloadAudio(jobRow.audio_url, label, { signal });
+      downloadedPath = downloaded.filePath;
+      partFiles = downloaded.bytes > 24 * 1024 * 1024 ? await splitAudio(downloaded.filePath, label, { signal }) : [downloaded.filePath];
+      chunkStates = partFiles.map((filePath, index) => ({ index, path: filePath, status: "pending", attempts: 0, text: "" }));
+      run("UPDATE transcription_jobs SET total_chunks=$total, chunks_json=$chunks, updated_at=$t WHERE id=$id", { $id: jobRow.id, $total: chunkStates.length, $chunks: json(chunkStates), $t: now() });
+    }
+    const modelRow = get("SELECT * FROM model_settings WHERE id=1");
+    for (const chunk of chunkStates) {
+      if (chunk.status === "done" && chunk.text) continue;
+      let lastError = "";
+      for (let attempt = Number(chunk.attempts || 0); attempt < 2; attempt += 1) {
+        throwIfAborted(signal);
+        try {
+          chunk.attempts = attempt + 1;
+          chunk.status = "running";
+          run("UPDATE transcription_jobs SET chunks_json=$chunks, updated_at=$t WHERE id=$id", { $id: jobRow.id, $chunks: json(chunkStates), $t: now() });
+          chunk.text = await transcribeAudioFile(chunk.path, modelRow, { signal });
+          chunk.status = "done";
+          lastError = "";
+          break;
+        } catch (error) {
+          if (isCancellationError(error)) throw error;
+          lastError = error.message || "Chunk transcription failed";
+          chunk.error = lastError;
+          chunk.status = attempt >= 1 ? "failed" : "pending";
+        }
+      }
+      if (lastError && chunk.status === "failed") throw new Error(lastError);
+      const completedChunks = chunkStates.filter((item) => item.status === "done").length;
+      run("UPDATE transcription_jobs SET completed_chunks=$completed, chunks_json=$chunks, updated_at=$t WHERE id=$id", { $id: jobRow.id, $completed: completedChunks, $chunks: json(chunkStates), $t: now() });
+      updateSourceTranscriptionStatus(source, {
+        id: jobRow.id,
+        status: "running",
+        episodeTitle: jobRow.episode_title,
+        totalChunks: chunkStates.length,
+        completedChunks,
+        error: "",
+      });
+    }
+    const transcript = chunkStates.map((chunk) => chunk.text || "").join("\n\n").trim();
+    if (!transcript) throw new Error("Transcription returned no text");
+    const saved = saveTranscriptDocument({ source, episode, transcript });
+    run(`UPDATE transcription_jobs SET status='completed', completed_chunks=$completed, transcript_document_id=$doc, error='', completed_at=$t, updated_at=$t WHERE id=$id`, {
+      $id: jobRow.id,
+      $completed: chunkStates.length,
+      $doc: saved.documentId,
+      $t: now(),
+    });
+    const config = { ...source.config, lastTranscribedGuid: episode.guid, lastTranscribedAt: now(), lastTranscriptDocumentId: saved.documentId };
+    run("UPDATE sources SET config_json=$config, updated_at=$t WHERE id=$id", { $id: source.id, $config: json({ ...config, lastTranscriptionJob: { id: jobRow.id, status: "completed", episodeTitle: jobRow.episode_title, totalChunks: chunkStates.length, completedChunks: chunkStates.length, error: "" } }), $t: now() });
+    audit("podcast.transcribed", "source", source.id, saved.skipped ? `Already transcribed: ${episode.title}` : `Background transcribed: ${episode.title}`, { documentId: saved.documentId, fingerprint: saved.fingerprint, jobId: jobRow.id, chunks: chunkStates.length }, "system");
+  } finally {
+    if (activeTranscriptionJob?.id === jobRow.id) activeTranscriptionJob = null;
+    if (downloadedPath && downloadedPath !== partFiles[0]) {
+      try { fs.unlinkSync(downloadedPath); } catch {}
+    }
+  }
+}
+
+function startTranscriptionWorker() {
+  if (transcriptionWorkerRunning) return;
+  transcriptionWorkerRunning = true;
+  setTimeout(async () => {
+    try {
+      while (true) {
+        const job = get("SELECT * FROM transcription_jobs WHERE status IN ('queued', 'running') ORDER BY created_at ASC LIMIT 1");
+        if (!job) break;
+        try {
+          await processTranscriptionJob(job);
+        } catch (error) {
+          const status = isCancellationError(error) ? "queued" : "failed";
+          run("UPDATE transcription_jobs SET status=$status, error=$error, updated_at=$t WHERE id=$id", { $id: job.id, $status: status, $error: error.message || "Transcription failed", $t: now() });
+          audit("podcast.transcription_failed", "source", job.source_id || "unknown", error.message || "Transcription failed", { jobId: job.id }, "system");
+        }
+      }
+    } finally {
+      transcriptionWorkerRunning = false;
+    }
+  }, 0).unref?.();
+}
+
 function itemFingerprint(sourceId, stableId) {
   return createHash("sha256").update(`${sourceId}:${stableId}`).digest("hex");
 }
@@ -1892,70 +2227,8 @@ function saveNormalizedItem({ source, canonicalUrl, title, body, publishedAt, st
   return { inserted: true, id: itemId, fingerprint };
 }
 
-async function transcribePodcastSource(sourceId, mode = "today") {
-  const row = get("SELECT * FROM sources WHERE id=$id", { $id: sourceId });
-  if (!row) throw new Error("Source not found");
-  const source = { ...row, config: parse(row.config_json, {}) };
-  if (source.type !== "Podcast") throw new Error("Source is not a podcast");
-  const feedUrl = source.config.feedUrl || source.locator;
-  if (!feedUrl) throw new Error("Podcast source does not have an RSS feed URL");
-
-  const feed = await fetchWithTimeout(feedUrl);
-  if (!feed.ok) throw new Error(`RSS fetch failed: ${feed.status} ${feed.statusText}`);
-  const episodes = parsePodcastRss(await feed.text());
-  const candidates = mode === "latest" ? episodes : episodes.filter(episodeIsToday);
-  const episode = candidates[0];
-  if (!episode) {
-    const fetchedAt = now();
-    const config = { ...source.config, lastFetchedAt: fetchedAt, lastFetchCacheStatus: "no-episode", lastFetchedCount: episodes.length, lastInsertedCount: 0 };
-    run("UPDATE sources SET config_json=$config, updated_at=$t WHERE id=$id", { $id: source.id, $config: json(config), $t: fetchedAt });
-    return { ok: true, transcribed: false, reason: mode === "latest" ? "No podcast episodes with audio were found." : "No podcast episode published today was found.", episodesChecked: episodes.length };
-  }
-  const episodeFingerprint = createHash("sha256").update(`${source.id}:${episode.guid || episode.audioUrl}`).digest("hex");
-  const existingEpisode = get("SELECT id FROM normalized_items WHERE fingerprint=$fingerprint", { $fingerprint: episodeFingerprint });
-  if (existingEpisode) {
-    const config = { ...source.config, lastTranscribedGuid: episode.guid, lastTranscribedAt: now(), lastTranscriptItemId: existingEpisode.id };
-    run("UPDATE sources SET config_json=$config, updated_at=$t WHERE id=$id", { $id: source.id, $config: json(config), $t: now() });
-    return {
-      ok: true,
-      transcribed: false,
-      skipped: true,
-      reason: "Episode was already transcribed.",
-      episode: { title: episode.title, pubDate: episode.pubDate, audioUrl: episode.audioUrl },
-      documentId: source.config.lastTranscriptDocumentId || null,
-      words: 0,
-      chunks: 0,
-      audioBytes: 0,
-    };
-  }
-
-  const modelRow = get("SELECT * FROM model_settings WHERE id=1");
-  const label = createHash("sha1").update(`${source.id}:${episode.guid || episode.audioUrl}:${Date.now()}`).digest("hex").slice(0, 14);
-  const downloaded = await downloadAudio(episode.audioUrl, label);
-  let partFiles = [downloaded.filePath];
-  if (downloaded.bytes > 24 * 1024 * 1024) {
-    partFiles = await splitAudio(downloaded.filePath, label);
-  }
-  const texts = [];
-  for (const part of partFiles) {
-    texts.push(await transcribeAudioFile(part, modelRow));
-  }
-  const transcript = texts.join("\n\n").trim();
-  if (!transcript) throw new Error("Transcription returned no text");
-  const saved = saveTranscriptDocument({ source, episode, transcript });
-  const config = { ...source.config, lastTranscribedGuid: episode.guid, lastTranscribedAt: now(), lastTranscriptDocumentId: saved.documentId };
-  run("UPDATE sources SET config_json=$config, updated_at=$t WHERE id=$id", { $id: source.id, $config: json(config), $t: now() });
-  audit("podcast.transcribed", "source", source.id, saved.skipped ? `Already transcribed: ${episode.title}` : `Transcribed: ${episode.title}`, { documentId: saved.documentId, fingerprint: saved.fingerprint }, "system");
-  return {
-    ok: true,
-    transcribed: !saved.skipped,
-    skipped: saved.skipped,
-    episode: { title: episode.title, pubDate: episode.pubDate, audioUrl: episode.audioUrl },
-    documentId: saved.documentId,
-    words: transcript.split(/\s+/).length,
-    chunks: partFiles.length,
-    audioBytes: downloaded.bytes,
-  };
+async function transcribePodcastSource(sourceId, mode = "today", options = {}) {
+  return requestPodcastTranscription(sourceId, mode, options);
 }
 
 async function fetchRssSource(source) {
@@ -2776,7 +3049,8 @@ function recentSourceCache(source, maxAgeMinutes = 10) {
   };
 }
 
-async function fetchSourceCollection({ useRecentCache = false, onProgress } = {}) {
+async function fetchSourceCollection({ useRecentCache = false, onProgress, runId = "", signal } = {}) {
+  throwIfAborted(signal);
   const activeSources = sources().filter((s) => s.status === "active" && s.approvalStatus === "approved");
   const podcastSources = activeSources.filter((s) => s.type === "Podcast");
   const xSources = activeSources.filter((s) => s.type === "X");
@@ -2801,7 +3075,7 @@ async function fetchSourceCollection({ useRecentCache = false, onProgress } = {}
       const cached = useRecentCache ? recentSourceCache(source) : null;
       transcriptionResults.push(cached
         ? { sourceId: source.id, sourceName: source.name, transcribed: false, ...cached }
-        : { sourceId: source.id, sourceName: source.name, ...(await transcribePodcastSource(source.id, "today")) });
+        : { sourceId: source.id, sourceName: source.name, ...(await transcribePodcastSource(source.id, "today", { runId, signal })) });
     } catch (error) {
       transcriptionResults.push({ sourceId: source.id, sourceName: source.name, ok: false, error: error.message || "Transcription failed" });
     } finally {
@@ -3703,7 +3977,7 @@ function workflowProgressSteps({ activeKey = "fetch", completed = new Set(), out
 }
 
 function state() {
-  return { sources: sources(), lenses: lenses(), councils: councils(), documents: documents(), workflowRuns: workflowRuns(), approvals: approvals(), auditLogs: audits(), telegram: telegramSettings(), model: modelSettings(), tts: ttsSettings(), connectors: connectorSettings(), briefConfig: briefConfig(), onboarding: onboardingState(), runtime: { mode: appMode, isDesktop, dataDir, workflowSteps: workflowPlan() } };
+  return { sources: sources(), lenses: lenses(), councils: councils(), documents: documents(), workflowRuns: workflowRuns(), transcriptionJobs: transcriptionJobs(), approvals: approvals(), auditLogs: audits(), telegram: telegramSettings(), model: modelSettings(), tts: ttsSettings(), connectors: connectorSettings(), briefConfig: briefConfig(), onboarding: onboardingState(), runtime: { mode: appMode, isDesktop, dataDir, workflowSteps: workflowPlan() } };
 }
 function briefConfig() {
   const r = get("SELECT * FROM brief_config WHERE id = 1");
@@ -4675,6 +4949,9 @@ function saveBriefDocument({ runId, artifact }) {
 
 async function executeWorkflow(trigger = "Manual", options = {}) {
   const runId = options.runId || id("run");
+  const controller = options.controller || new AbortController();
+  const signal = options.signal || controller.signal;
+  if (!options.skipRegistry) activeWorkflowRuns.set(runId, { controller, startedAt: now() });
   const started = now();
   const configAtStart = briefConfig();
   const completedKeys = new Set();
@@ -4701,6 +4978,7 @@ async function executeWorkflow(trigger = "Manual", options = {}) {
   });
   audit("run.started", "workflow_run", runId, `Trigger: ${trigger}`, {}, "system");
   try {
+    throwIfAborted(signal);
     writeProgress("fetch");
     await progressDelay(200);
     const {
@@ -4716,11 +4994,14 @@ async function executeWorkflow(trigger = "Manual", options = {}) {
       sourceResults,
     } = await fetchSourceCollection({
       useRecentCache: true,
+      runId,
+      signal,
       onProgress: ({ output, detail }) => {
         stepOutputs.fetch = { output, detail };
         writeProgress("fetch");
       },
     });
+    throwIfAborted(signal);
     finishProgress("fetch", `${activeSources.length} configured source${activeSources.length === 1 ? "" : "s"} checked`);
     writeProgress("normalize");
     await progressDelay();
@@ -4856,6 +5137,14 @@ async function executeWorkflow(trigger = "Manual", options = {}) {
   audit("artifact.saved", "workflow_run", runId, "Run artifact persisted", {}, "system");
   return workflowRuns().find((r) => r.id === runId);
   } catch (error) {
+    if (isCancellationError(error)) {
+      const completed = now();
+      run(`UPDATE workflow_runs
+           SET status='cancelled', completed_at=$completed, error='Run was stopped before completion.'
+           WHERE id=$id`, { $id: runId, $completed: completed });
+      audit("run.cancelled", "workflow_run", runId, "Run was stopped before completion", {}, "operator");
+      throw error;
+    }
     const completed = now();
     const failedSteps = workflowProgressSteps({ activeKey: "", completed: completedKeys, outputs: stepOutputs, config: configAtStart });
     const failedIndex = Math.max(0, failedSteps.findIndex((step) => step.status !== "done"));
@@ -4875,11 +5164,14 @@ async function executeWorkflow(trigger = "Manual", options = {}) {
       $artifact: json({ error: error.message || "Workflow failed", failedAt: completed }),
     });
     throw error;
+  } finally {
+    if (activeWorkflowRuns.get(runId)?.controller === controller) activeWorkflowRuns.delete(runId);
   }
 }
 
 migrate();
 seed();
+startTranscriptionWorker();
 
 const app = express();
 app.use(express.json({ limit: "2mb" }));
@@ -5494,6 +5786,7 @@ app.post("/api/workflow-runs", async (req, res) => {
       return res.json({ state: state(), run });
     }
     promise.catch((error) => {
+      if (isCancellationError(error)) return;
       audit("run.failed", "workflow_run", runId, error.message || "Workflow failed", {}, "system");
     });
     res.status(202).json({ state: state(), run: workflowRuns().find((r) => r.id === runId) });
@@ -5511,6 +5804,16 @@ app.get("/api/workflow-runs/:id", (req, res) => {
 app.delete("/api/workflow-runs/:id", (req, res) => {
   const row = get("SELECT * FROM workflow_runs WHERE id=$id", { $id: req.params.id });
   if (!row) return res.status(404).json({ error: "Workflow run not found", state: state() });
+  const activeRun = activeWorkflowRuns.get(req.params.id);
+  if (activeRun) {
+    try { activeRun.controller.abort(); } catch {}
+  }
+  if (activeTranscriptionJob?.runId === req.params.id) {
+    try { activeTranscriptionJob.controller.abort(); } catch {}
+  }
+  if ((row.status === "running" || activeTranscriptionJob?.runId === req.params.id) && activeTranscriptionChild) {
+    try { activeTranscriptionChild.kill("SIGTERM"); } catch {}
+  }
   const artifact = parse(row.artifact_json, {});
   const audioFileName = artifact?.audio?.fileName ? path.basename(String(artifact.audio.fileName)) : "";
   if (audioFileName) {
@@ -5519,8 +5822,9 @@ app.delete("/api/workflow-runs/:id", (req, res) => {
       try { fs.unlinkSync(audioPath); } catch {}
     }
   }
+  run("UPDATE transcription_jobs SET status='cancelled', error='Parent brief run was deleted.', updated_at=$t WHERE run_id=$id AND status IN ('queued', 'running')", { $id: req.params.id, $t: now() });
   run("DELETE FROM workflow_runs WHERE id=$id", { $id: req.params.id });
-  audit("workflow_run.deleted", "workflow_run", req.params.id, row.label || "Deleted brief", { audioFileName }, "operator");
+  audit(row.status === "running" ? "workflow_run.stopped_deleted" : "workflow_run.deleted", "workflow_run", req.params.id, row.label || "Deleted brief", { audioFileName, killedActiveRun: !!activeRun }, "operator");
   res.json(state());
 });
 

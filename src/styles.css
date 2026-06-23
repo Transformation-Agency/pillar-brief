@@ -1571,6 +1571,9 @@ span.section-target-select {
 .source-status-stack small {
   color: var(--muted);
 }
+.source-name-cell .source-transcription-status {
+  color: var(--warn);
+}
 .source-icon-box {
   width: 42px;
   height: 42px;
