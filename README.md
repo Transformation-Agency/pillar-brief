@@ -15,13 +15,13 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/Transformation-Agency/pillar-brief/releases/download/v0.1.7/Pillar.Brief_0.1.7_aarch64.dmg">
+  <a href="https://github.com/Transformation-Agency/pillar-brief/releases/download/v0.1.8/Pillar.Brief_0.1.8_aarch64.dmg">
     <img src="https://img.shields.io/badge/Download-M--series%20Macs-black?style=for-the-badge&logo=apple" alt="Download for M-series Macs" />
   </a>
-  <a href="https://github.com/Transformation-Agency/pillar-brief/releases/download/v0.1.7/Pillar.Brief_0.1.7_x64.dmg">
+  <a href="https://github.com/Transformation-Agency/pillar-brief/releases/download/v0.1.8/Pillar.Brief_0.1.8_x64.dmg">
     <img src="https://img.shields.io/badge/Download-Intel%20Macs-333333?style=for-the-badge&logo=apple" alt="Download for Intel Macs" />
   </a>
-  <a href="https://github.com/Transformation-Agency/pillar-brief/releases/download/v0.1.7/Pillar.Brief_0.1.7_x64-setup.exe">
+  <a href="https://github.com/Transformation-Agency/pillar-brief/releases/download/v0.1.8/Pillar.Brief_0.1.8_x64-setup.exe">
     <img src="https://img.shields.io/badge/Download-Windows-0078D4?style=for-the-badge" alt="Download for Windows" />
   </a>
 </p>
@@ -40,14 +40,14 @@
 
 ## Latest Release
 
-**v0.1.7** adds stuck-run recovery and safer long podcast transcription:
+**v0.1.8** adds in-app feedback reporting:
 
-- Lets you stop and delete an active brief run from the Briefs tab.
-- Marks interrupted running jobs as failed on restart instead of leaving zombies.
-- Moves podcast transcription into resumable background jobs.
-- Saves chunk progress for large episodes and resumes after restart.
-- Shows queued/running podcast transcription status in Sources.
-- Uses substantial podcast episode notes as a transcript fast path when available.
+- Opens a feedback form from the floating button or Help menu.
+- Supports bug reports, feature requests, and general feedback.
+- Lets users attach or paste a screenshot with a report.
+- Routes Pillar Brief submissions to the shared feedback server using the
+  `pillar-brief` product id.
+- Bakes the feedback API base into signed release builds from GitHub Actions.
 
 See all versions on the
 [GitHub releases page](https://github.com/Transformation-Agency/pillar-brief/releases).
