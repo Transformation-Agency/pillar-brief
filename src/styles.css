@@ -1724,8 +1724,9 @@ span.section-target-select {
 }
 .feedback-modal {
   width: min(680px, calc(100vw - 36px));
+  max-height: calc(100vh - 56px);
   display: grid;
-  overflow: hidden;
+  overflow: auto;
 }
 .feedback-form {
   min-height: 0;
@@ -1779,7 +1780,7 @@ span.section-target-select {
 .feedback-preview img {
   display: block;
   width: 100%;
-  max-height: 240px;
+  max-height: 200px;
   object-fit: contain;
   background: rgba(36, 33, 30, .08);
 }

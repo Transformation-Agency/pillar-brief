@@ -125,6 +125,7 @@ export default function FeedbackWidget({ route, appVersion = "", openSignal = 0,
     setSubmitting(true);
     const result = await submitFeedback({
       ...feedbackContext({ route, appVersion }),
+      product: "pillar-brief",
       type,
       summary: summary.trim(),
       details: details.trim(),
